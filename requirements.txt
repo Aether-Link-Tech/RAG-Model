@@ -1,0 +1,44 @@
+# Core
+fastapi>=0.142.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.0.0
+python-multipart
+
+# Database
+sqlalchemy>=2.0.0
+asyncpg>=0.30.0
+alembic>=1.13.0
+
+# Auth
+PyJWT>=2.8.0
+passlib[bcrypt]>=1.7.4
+python-magic>=0.4.27
+
+# Jobs
+celery>=5.4.0
+redis>=5.0.0
+
+# AI / ML
+chromadb>=1.5.3
+sentence-transformers>=3.0.0
+transformers>=4.40.0
+torch>=2.2.0
+tiktoken
+rank-bm25
+
+# Documents
+pypdf2
+pdfplumber
+python-docx
+pymupdf
+
+# OCR
+pillow
+easyocr
+
+# Security
+clamd
+
+# Utils
+python-dotenv
+httpx

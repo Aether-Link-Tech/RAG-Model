@@ -154,6 +154,7 @@ erDiagram
         string hashed_password
         string role "admin | user, CHECK constraint"
         timestamp created_at
+        boolean is_deleted "set to true when user is deleted"
     }
 
     REFRESH_TOKENS {
@@ -175,7 +176,7 @@ erDiagram
         string status "pending | processing | indexed | failed"
         text error_message "nullable, set when failed"
         timestamp created_at
-        timestamp updated_at
+        boolean is_deleted "set to true when document is deleted"
     }
 
     DOCUMENT_CHUNKS {

@@ -2,7 +2,10 @@ import time
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.app.core.config import settings
+try:
+    from backend.app.core.config import settings
+except ImportError:
+    from app.core.config import settings
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

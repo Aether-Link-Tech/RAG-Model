@@ -2,7 +2,7 @@ import time
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.app.core.config import settings
+from app.core.config import settings
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -11,6 +11,9 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+from app.api.documents import router as documents_router
+
+app.include_router(documents_router)
 
 # CORS setup
 app.add_middleware(

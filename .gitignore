@@ -59,3 +59,12 @@ Thumbs.db
 # Ollama / Models cache
 /models/
 .cache/
+
+
+# Test files
+test_*.py
+storage
+al176_duplicate.txt
+al176_public_test.txt
+al176_race_test.txt
+al176_test.txt

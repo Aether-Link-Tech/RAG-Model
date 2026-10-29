@@ -46,6 +46,7 @@ yarn-error.log*
 postgres_data/
 redis_data/
 chroma_data/
+uploads/
 
 # IDE & OS
 .vscode/

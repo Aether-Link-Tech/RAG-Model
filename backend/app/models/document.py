@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
-from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, CheckConstraint, func
+from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, CheckConstraint, Index, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.db.base import Base
@@ -39,10 +39,9 @@ class Document(Base):
         Integer,
         nullable=False
     )
-    # SHA-256 hash: UNIQUE constraint prevents duplicate processing and race conditions
+    # SHA-256 hash: 64-char hex digest; scoped uniqueness enforced via partial unique indexes
     file_hash: Mapped[str] = mapped_column(
         String(64),
-        unique=True,
         index=True,
         nullable=False
     )
@@ -54,6 +53,7 @@ class Document(Base):
     visibility: Mapped[str] = mapped_column(
         String(20),
         default="private",
+        server_default="private",
         nullable=False
     )
     error_message: Mapped[Optional[str]] = mapped_column(
@@ -85,6 +85,19 @@ class Document(Base):
         CheckConstraint(
             "visibility IN ('private', 'public')",
             name="check_document_visibility"
+        ),
+        Index(
+            "uq_documents_private_user_hash",
+            "user_id",
+            "file_hash",
+            unique=True,
+            postgresql_where=text("visibility = 'private'"),
+        ),
+        Index(
+            "uq_documents_public_hash",
+            "file_hash",
+            unique=True,
+            postgresql_where=text("visibility = 'public'"),
         ),
     )
 

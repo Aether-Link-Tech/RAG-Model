@@ -2,11 +2,9 @@ import os
 from typing import List
 
 try:
-    from pydantic_settings import BaseSettings
+    from pydantic_settings import BaseSettings, SettingsConfigDict
     class BaseConfig(BaseSettings):
-        class Config:
-            env_file = ".env"
-            extra = "ignore"
+        model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 except ImportError:
     from pydantic import BaseModel
     class BaseConfig(BaseModel):

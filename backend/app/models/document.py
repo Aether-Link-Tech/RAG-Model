@@ -51,6 +51,11 @@ class Document(Base):
         default="pending",
         nullable=False
     )
+    visibility: Mapped[str] = mapped_column(
+        String(20),
+        default="private",
+        nullable=False
+    )
     error_message: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True
@@ -76,6 +81,10 @@ class Document(Base):
         CheckConstraint(
             "status IN ('pending', 'processing', 'indexed', 'failed')",
             name="check_document_status"
+        ),
+        CheckConstraint(
+            "visibility IN ('private', 'public')",
+            name="check_document_visibility"
         ),
     )
 

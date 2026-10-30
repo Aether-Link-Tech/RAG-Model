@@ -4,12 +4,13 @@ Protected by Bearer JWT authentication (`CurrentUser`) and PostgreSQL Row-Level
 Security (AL-127 / AL-129) via transaction-local `app.user_id` and `app.user_role`.
 """
 import codecs
+import asyncio
+import logging
 import os
 import uuid
 from pathlib import Path
-import logging
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Request, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
@@ -18,6 +19,11 @@ from backend.app.core.config import settings
 from backend.app.models.document import Document
 from backend.app.schemas.document import DocumentResponse, Visibility
 from backend.app.services.document_ingest import build_storage_path, index_document
+from backend.app.services.clamav import (
+    ClamAVUnavailableError,
+    InfectedFileError,
+    scan_and_quarantine,
+)
 from backend.app.services.hash_service import (
     FileSizeLimitExceededError,
     compute_sha256_and_size_stream,
@@ -239,6 +245,30 @@ async def upload_document(
                 buffer.write(chunk)
             buffer.flush()
 
+        try:
+            await asyncio.to_thread(
+                scan_and_quarantine,
+                tmp_path,
+                current_user.id,
+                document_id,
+            )
+        except InfectedFileError as exc:
+            client_ip = request.client.host if request.client else "unknown"
+            await log_security_event(
+                user_id_str,
+                filename_str,
+                f"Malware detected: {exc.signature}",
+                client_ip,
+            )
+            logger.warning(
+                "Quarantined infected upload: user_id=%s ip=%s filename=%r signature=%s",
+                current_user.id,
+                client_ip,
+                safe_filename,
+                exc.signature,
+            )
+            raise
+
         os.replace(tmp_path, file_path)
 
         document = Document(
@@ -290,6 +320,20 @@ async def upload_document(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to persist uploaded document to storage.",
+        ) from exc
+    except InfectedFileError as exc:
+        _best_effort_remove(tmp_path)
+        await _safe_rollback(db)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Malware was detected. The file was quarantined and the upload was blocked.",
+        ) from exc
+    except ClamAVUnavailableError as exc:
+        _best_effort_remove(tmp_path)
+        await _safe_rollback(db)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Malware scanning is temporarily unavailable. Please retry the upload.",
         ) from exc
     except BaseException:
         if not committed:

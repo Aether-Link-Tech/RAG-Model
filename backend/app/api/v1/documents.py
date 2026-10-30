@@ -4,6 +4,7 @@ Protected by Bearer JWT authentication (`CurrentUser`) and PostgreSQL Row-Level
 Security (AL-127 / AL-129) via transaction-local `app.user_id` and `app.user_role`.
 """
 import codecs
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -35,6 +36,7 @@ async def log_security_event(user_id: str, filename: str, reason: str, ip: str):
         pass
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
+logger = logging.getLogger(__name__)
 
 ALLOWED_MIME_TYPES = {
     ".pdf": "application/pdf",
@@ -357,15 +359,60 @@ async def delete_document(
         )
 
     visibility = "public" if document.visibility == "public" else "private"
-    delete_document_chunks(
-        user_id=document.user_id,
-        document_id=document.id,
-        visibility=visibility,
+    document_id = document.id
+    original_path = Path(document.file_path)
+    staged_path = original_path.with_name(
+        f".{original_path.name}.{uuid.uuid4().hex}.deleting"
     )
-    if os.path.exists(document.file_path):
-        os.remove(document.file_path)
-    await db.delete(document)
-    await db.commit()
+    staged_file = False
+
+    # Move the file aside first so a failed database delete can restore it.
+    if original_path.exists():
+        try:
+            os.replace(original_path, staged_path)
+            staged_file = True
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Document file could not be staged for deletion.",
+            ) from exc
+
+    try:
+        # ChromaDB is outside the PostgreSQL transaction. Repair its index if
+        # the SQL delete fails after vector cleanup succeeds.
+        delete_document_chunks(
+            user_id=document.user_id,
+            document_id=document_id,
+            visibility=visibility,
+        )
+        await db.delete(document)
+        await db.commit()
+    except Exception as exc:
+        await _safe_rollback(db)
+        if staged_file and staged_path.exists():
+            try:
+                os.replace(staged_path, original_path)
+            except OSError:
+                logger.exception("Could not restore document file after delete failure")
+        try:
+            restored_document = await db.get(Document, document_id)
+            if restored_document is not None:
+                from backend.app.services.document_ingest import index_document
+
+                await index_document(db, restored_document)
+        except Exception:
+            logger.exception("Could not restore document index after delete failure")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document deletion could not be completed. Please retry.",
+        ) from exc
+
+    if staged_file:
+        try:
+            staged_path.unlink()
+        except OSError:
+            # Keep the tombstone name so it cannot be mistaken for a live upload.
+            logger.exception("Document was deleted but its staged file could not be removed")
 
 
 async def _accessible_document(

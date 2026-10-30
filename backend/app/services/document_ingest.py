@@ -7,6 +7,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
+from backend.app.db.session import AsyncSessionLocal
 from backend.app.models.document import Document
 from backend.app.services.chunking import split_text
 from backend.app.services.document_parser import (
@@ -68,3 +69,11 @@ def build_storage_path(user_id: uuid.UUID, document_id: uuid.UUID, filename: str
     directory = Path(settings.UPLOAD_DIR) / str(user_id)
     os.makedirs(directory, exist_ok=True)
     return str(directory / f"{document_id}{extension}")
+
+
+async def reindex_document_in_background(document_id: uuid.UUID) -> None:
+    """Reload and re-index a document in a session owned by the background task."""
+    async with AsyncSessionLocal() as db:
+        document = await db.get(Document, document_id)
+        if document is not None:
+            await index_document(db, document)

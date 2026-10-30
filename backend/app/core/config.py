@@ -47,6 +47,8 @@ class Settings(BaseConfig):
     SECRET_KEY: str = os.getenv("SECRET_KEY", "rag-secret-development-key-2026-auth-token-super-secure")
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+    JWT_ISSUER: str = os.getenv("JWT_ISSUER", "aether-link-rag")
+    JWT_AUDIENCE: str = os.getenv("JWT_AUDIENCE", "aether-link-rag-api")
 
     # Uploads
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads")

@@ -1,10 +1,7 @@
 """Document upload, listing, retrieval, and deletion endpoints.
 
-NOTE (Development-Only Auth Scaffolding):
-Endpoints currently resolve identity via `CurrentUser` (`X-User-Id` header in
-`backend.app.api.deps`) pending JWT authentication and RBAC in AL-22. These
-unauthenticated endpoints provide no cryptographic caller verification and must
-NOT be exposed in a public or production deployment before AL-22 is integrated.
+Protected by Bearer JWT authentication (`CurrentUser`) and PostgreSQL Row-Level
+Security (AL-127 / AL-129) via transaction-local `app.user_id` and `app.user_role`.
 """
 import codecs
 import os
@@ -12,7 +9,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.api.deps import CurrentUser, DbSession
@@ -291,7 +288,12 @@ async def upload_document(
 async def list_documents(db: DbSession, current_user: CurrentUser) -> list[Document]:
     result = await db.execute(
         select(Document)
-        .where(Document.user_id == current_user.id)
+        .where(
+            or_(
+                Document.user_id == current_user.id,
+                Document.visibility == "public",
+            )
+        )
         .order_by(Document.created_at.desc())
     )
     return list(result.scalars().all())
@@ -303,8 +305,7 @@ async def get_document(
     db: DbSession,
     current_user: CurrentUser,
 ) -> Document:
-    document = await _owned_document(db, current_user.id, document_id)
-    return document
+    return await _accessible_document(db, current_user.id, document_id)
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -313,10 +314,22 @@ async def delete_document(
     db: DbSession,
     current_user: CurrentUser,
 ) -> None:
-    document = await _owned_document(db, current_user.id, document_id)
+    document = await _accessible_document(db, current_user.id, document_id)
+    if document.visibility == "private" and document.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if (
+        document.visibility == "public"
+        and document.user_id != current_user.id
+        and current_user.role != "admin"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the original uploader or an admin can delete a public document.",
+        )
+
     visibility = "public" if document.visibility == "public" else "private"
     delete_document_chunks(
-        user_id=current_user.id,
+        user_id=document.user_id,
         document_id=document.id,
         visibility=visibility,
     )
@@ -326,11 +339,18 @@ async def delete_document(
     await db.commit()
 
 
-async def _owned_document(db: DbSession, user_id: uuid.UUID, document_id: uuid.UUID) -> Document:
+async def _accessible_document(
+    db: DbSession,
+    user_id: uuid.UUID,
+    document_id: uuid.UUID,
+) -> Document:
     result = await db.execute(
         select(Document).where(
             Document.id == document_id,
-            Document.user_id == user_id,
+            or_(
+                Document.user_id == user_id,
+                Document.visibility == "public",
+            ),
         )
     )
     document = result.scalar_one_or_none()

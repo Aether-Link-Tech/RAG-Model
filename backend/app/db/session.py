@@ -1,6 +1,7 @@
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from backend.app.core.config import settings
+from backend.app.db.rls import clear_rls_context
 
 # Async engine for FastAPI and asyncpg
 engine = create_async_engine(
@@ -25,4 +26,5 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
         finally:
+            clear_rls_context(session)
             await session.close()

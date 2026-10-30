@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
+from backend.app.core.security import create_access_token
 from backend.app.models.document import Document
 from backend.app.models.user import User
 
@@ -18,7 +19,8 @@ VALID_DOCX_BYTES = b"PK\x03\x04\x14\x00\x00\x00\x08\x00Test docx mock content"
 
 
 def _auth_headers(user: User) -> dict[str, str]:
-    return {"X-User-Id": str(user.id)}
+    token = create_access_token(user.id, role=user.role)
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _list_all_files(root_dir: str) -> list[str]:
@@ -498,10 +500,11 @@ async def test_validation_rejects_empty_unsupported_and_spoofed_files(
 
 @pytest.mark.asyncio
 async def test_unknown_user_returns_401(async_client):
-    """Verify upload with unknown X-User-Id returns 401 Unauthorized."""
+    """Verify upload with a token for a non-existent user returns 401 Unauthorized."""
+    token = create_access_token(uuid.uuid4())
     response = await async_client.post(
         "/api/v1/documents",
-        headers={"X-User-Id": str(uuid.uuid4())},
+        headers={"Authorization": f"Bearer {token}"},
         files={"file": ("doc.txt", io.BytesIO(VALID_TXT_BYTES), "text/plain")},
     )
     assert response.status_code == 401

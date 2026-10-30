@@ -3,11 +3,13 @@ import pytest
 import pytest_asyncio
 import httpx
 from typing import AsyncGenerator
+from sqlalchemy import delete
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from backend.app.api.v1 import documents as documents_api
 from backend.app.core.config import settings
+from backend.app.db.rls import clear_rls_context
 from backend.app.db.session import get_db
 from backend.app.main import app
 from backend.app.models.document import Document
@@ -44,7 +46,11 @@ def stub_rag_indexing(monkeypatch):
     async def _noop_index_document(db: AsyncSession, document: Document) -> Document:
         return document
 
+    def _noop_delete_document_chunks(*args, **kwargs) -> None:
+        return None
+
     monkeypatch.setattr(documents_api, "index_document", _noop_index_document)
+    monkeypatch.setattr(documents_api, "delete_document_chunks", _noop_delete_document_chunks)
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +58,11 @@ def override_db_dependency():
     """Ensure every FastAPI request gets a fresh AsyncSession with NullPool."""
     async def _test_get_db() -> AsyncGenerator[AsyncSession, None]:
         async with TestingSessionLocal() as session:
-            yield session
+            try:
+                yield session
+            finally:
+                clear_rls_context(session)
+                await session.close()
 
     app.dependency_overrides[get_db] = _test_get_db
     yield
@@ -69,9 +79,10 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 @pytest_asyncio.fixture
 async def test_user(db_session: AsyncSession) -> AsyncGenerator[User, None]:
     """Creates a primary test user in PostgreSQL and cleans up after the test."""
+    user_id = uuid.uuid4()
     user = User(
-        id=uuid.uuid4(),
-        email=f"user-{uuid.uuid4().hex[:8]}@example.com",
+        id=user_id,
+        email=f"user-{user_id.hex[:8]}@example.com",
         hashed_password="test_hashed_password_123",
         role="user",
         is_deleted=False,
@@ -83,10 +94,10 @@ async def test_user(db_session: AsyncSession) -> AsyncGenerator[User, None]:
     yield user
 
     try:
-        user_to_delete = await db_session.get(User, user.id)
-        if user_to_delete:
-            await db_session.delete(user_to_delete)
-            await db_session.commit()
+        clear_rls_context(db_session)
+        await db_session.rollback()
+        await db_session.execute(delete(User).where(User.id == user_id))
+        await db_session.commit()
     except Exception:
         await db_session.rollback()
 
@@ -94,9 +105,10 @@ async def test_user(db_session: AsyncSession) -> AsyncGenerator[User, None]:
 @pytest_asyncio.fixture
 async def test_user_2(db_session: AsyncSession) -> AsyncGenerator[User, None]:
     """Creates a second test user to verify multi-user isolation and public pool deduplication."""
+    user_id = uuid.uuid4()
     user = User(
-        id=uuid.uuid4(),
-        email=f"user2-{uuid.uuid4().hex[:8]}@example.com",
+        id=user_id,
+        email=f"user2-{user_id.hex[:8]}@example.com",
         hashed_password="test_hashed_password_456",
         role="user",
         is_deleted=False,
@@ -108,10 +120,10 @@ async def test_user_2(db_session: AsyncSession) -> AsyncGenerator[User, None]:
     yield user
 
     try:
-        user_to_delete = await db_session.get(User, user.id)
-        if user_to_delete:
-            await db_session.delete(user_to_delete)
-            await db_session.commit()
+        clear_rls_context(db_session)
+        await db_session.rollback()
+        await db_session.execute(delete(User).where(User.id == user_id))
+        await db_session.commit()
     except Exception:
         await db_session.rollback()
 

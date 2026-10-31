@@ -3,9 +3,9 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from backend.app.core.config import settings
 from backend.app.db.rls import clear_rls_context
 
-# Async engine for FastAPI and asyncpg
+# Async engine for FastAPI and asyncpg using the least-privilege `rag_app` LOGIN role
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    settings.app_database_url,
     echo=settings.DEBUG,
     future=True,
     pool_pre_ping=True,

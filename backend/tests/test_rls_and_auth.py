@@ -4,6 +4,7 @@ and AL-127 PostgreSQL Row-Level Security (RLS) on `documents`.
 from datetime import timedelta
 import hashlib
 import io
+import os
 import uuid
 
 import pytest
@@ -11,8 +12,14 @@ from sqlalchemy import select, text, update, delete
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from backend.app.core.config import settings
-from backend.app.core.security import create_access_token, hash_password
+from backend.app.api.v1 import users as users_api
+from backend.app.core.config import (
+    DEFAULT_DEV_APP_DB_PASSWORD,
+    DEFAULT_DEV_SECRET_KEY,
+    Settings,
+    settings,
+)
+from backend.app.core.security import create_access_token, decode_access_token, hash_password
 from backend.app.db.rls import (
     clear_rls_context,
     configure_rls_context,
@@ -20,6 +27,7 @@ from backend.app.db.rls import (
 )
 from backend.app.models.document import Document
 from backend.app.models.user import User
+from backend.tests.conftest import TestingSessionLocal, purge_test_users
 
 VALID_TXT_BYTES = b"Top-secret enterprise knowledge base document."
 
@@ -72,8 +80,7 @@ async def test_auth_login_issues_valid_jwt_and_rejects_invalid_credentials(
         assert me_res.status_code == 200
         assert me_res.json()["id"] == str(user.id)
     finally:
-        await db_session.execute(delete(User).where(User.id == user.id))
-        await db_session.commit()
+        await purge_test_users(user.id)
 
 
 @pytest.mark.asyncio
@@ -460,8 +467,7 @@ async def test_admin_can_delete_public_document_but_cannot_access_other_users_pr
     finally:
         clear_rls_context(db_session)
         await db_session.rollback()
-        await db_session.execute(delete(User).where(User.id == admin_id))
-        await db_session.commit()
+        await purge_test_users(admin_id)
 
 
 @pytest.mark.asyncio
@@ -482,7 +488,7 @@ async def test_pooled_database_connection_reuse_does_not_leak_rls_context(
 
     # Create a dedicated engine with QueuePool of size 1 (forcing all sessions to reuse the exact same PG connection)
     pooled_engine = create_async_engine(
-        settings.DATABASE_URL,
+        settings.app_database_url,
         pool_size=1,
         max_overflow=0,
         future=True,
@@ -515,8 +521,8 @@ async def test_pooled_database_connection_reuse_does_not_leak_rls_context(
             backend_pid_2 = (await session_2.execute(text("SELECT pg_backend_pid()"))).scalar_one()
             assert backend_pid_2 == backend_pid_1  # Proven same underlying PostgreSQL connection!
 
-            # Enforce unauthenticated RLS role on this reused connection -> `app.user_id` is empty and 0 rows visible
-            await enforce_unauthenticated_rls_context(session_2)
+            # Even without calling `enforce_unauthenticated_rls_context`, the reused `rag_app` connection
+            # has no `app.user_id` from Session 1 and fails closed automatically!
             leaked_uid = (
                 await session_2.execute(text("SELECT NULLIF(current_setting('app.user_id', true), '')"))
             ).scalar_one_or_none()
@@ -543,3 +549,640 @@ async def test_pooled_database_connection_reuse_does_not_leak_rls_context(
             clear_rls_context(session_3)
     finally:
         await pooled_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_admin_self_registration_attempt_forced_to_user_role(
+    async_client, test_user: User, db_session: AsyncSession
+):
+    """Priority 1 / Priority 6 (#1, #2):
+    Verify an unauthenticated caller attempting to register with `role='admin'` via
+    `POST /api/v1/users` always receives `role='user'` and cannot perform admin actions.
+    """
+    email = f"attacker-{uuid.uuid4().hex[:8]}@example.com"
+    password = "AttackerPassword123!"
+
+    reg_res = await async_client.post(
+        "/api/v1/users",
+        json={"email": email, "password": password, "role": "admin"},
+    )
+    assert reg_res.status_code == 201
+    created_data = reg_res.json()
+    created_uid = uuid.UUID(created_data["id"])
+    assert created_data["role"] == "user"
+
+    try:
+        # Verify database record has role == 'user'
+        db_user = await db_session.get(User, created_uid)
+        assert db_user is not None
+        assert db_user.role == "user"
+
+        # Log in as the newly registered user and verify JWT claim has role == 'user'
+        login_res = await async_client.post(
+            "/api/v1/auth/login",
+            json={"email": email, "password": password},
+        )
+        assert login_res.status_code == 200
+        token = login_res.json()["access_token"]
+        decoded = decode_access_token(token)
+        assert decoded["role"] == "user"
+
+        # Upload a public document as `test_user` and verify the self-registered caller CANNOT delete it
+        pub_res = await async_client.post(
+            "/api/v1/documents",
+            headers=_bearer_headers(test_user),
+            data={"visibility": "public"},
+            files={
+                "file": (
+                    "protected_public.txt",
+                    io.BytesIO(f"Protected public content ({uuid.uuid4()})".encode()),
+                    "text/plain",
+                )
+            },
+        )
+        assert pub_res.status_code == 201
+        pub_doc_id = pub_res.json()["id"]
+
+        del_res = await async_client.delete(
+            f"/api/v1/documents/{pub_doc_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert del_res.status_code == 403
+    finally:
+        clear_rls_context(db_session)
+        await db_session.rollback()
+        await purge_test_users(created_uid)
+
+
+@pytest.mark.asyncio
+async def test_application_connects_as_rag_app_login_role_and_fails_closed_when_unauthenticated(
+    async_client, test_user: User
+):
+    """Priority 2 / Priority 5 / Priority 6 (#3, #4):
+    Verify normal application database connections use the `rag_app` LOGIN role
+    (`NOSUPERUSER`, `NOBYPASSRLS`), cannot escalate via `RESET ROLE` or `SET ROLE postgres`,
+    and fail closed by default when `app.user_id` is not set.
+    """
+    # Create both a private and a public document
+    priv_res = await async_client.post(
+        "/api/v1/documents",
+        headers=_bearer_headers(test_user),
+        data={"visibility": "private"},
+        files={
+            "file": (
+                "role_check_priv.txt",
+                io.BytesIO(f"Private under rag_app ({uuid.uuid4()})".encode()),
+                "text/plain",
+            )
+        },
+    )
+    assert priv_res.status_code == 201
+    priv_id = uuid.UUID(priv_res.json()["id"])
+
+    pub_res = await async_client.post(
+        "/api/v1/documents",
+        headers=_bearer_headers(test_user),
+        data={"visibility": "public"},
+        files={
+            "file": (
+                "role_check_pub.txt",
+                io.BytesIO(f"Public under rag_app ({uuid.uuid4()})".encode()),
+                "text/plain",
+            )
+        },
+    )
+    assert pub_res.status_code == 201
+    pub_id = uuid.UUID(pub_res.json()["id"])
+
+    # Open a raw session from `TestingSessionLocal` without calling `configure_rls_context`
+    async with TestingSessionLocal() as raw_session:
+        role_info = (
+            await raw_session.execute(
+                text(
+                    "SELECT session_user, current_user, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb "
+                    "FROM pg_roles WHERE rolname = session_user"
+                )
+            )
+        ).one()
+        assert role_info.session_user == "rag_app"
+        assert role_info.current_user == "rag_app"
+        assert role_info.rolsuper is False
+        assert role_info.rolbypassrls is False
+        assert role_info.rolcreaterole is False
+        assert role_info.rolcreatedb is False
+
+        # Executing `RESET ROLE` keeps `current_user == 'rag_app'`
+        await raw_session.execute(text("RESET ROLE"))
+        after_reset = (await raw_session.execute(text("SELECT current_user"))).scalar_one()
+        assert after_reset == "rag_app"
+
+        # Without `app.user_id` set, `SELECT` on `documents` fails closed (returns 0 rows even for public docs!)
+        unauth_docs = (
+            await raw_session.execute(
+                select(Document.id).where(Document.id.in_([priv_id, pub_id]))
+            )
+        ).scalars().all()
+        assert unauth_docs == []
+
+        # Attempt to escalate via `SET ROLE postgres` fails with insufficient privilege
+        with pytest.raises(DBAPIError):
+            await raw_session.execute(text("SET ROLE postgres"))
+        await raw_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_document_user_id_and_visibility_immutability_enforced_at_database_level(
+    async_client, test_user: User, test_user_2: User, db_session: AsyncSession
+):
+    """Priority 3 / Priority 6 (#6, #7, #8):
+    Verify PostgreSQL prevents unauthorized changes to `documents.user_id` and `documents.visibility`:
+    - Owners cannot reassign `user_id` or flip `visibility` on their documents.
+    - Admins cannot hijack another user's public document (`SET user_id = admin.id`)
+      or convert another user's public document into a private document (`SET visibility = 'private'`).
+    - Admins CAN update mutable status fields on public documents.
+    """
+    admin_id = uuid.uuid4()
+    admin = User(
+        id=admin_id,
+        email=f"admin-immut-{admin_id.hex[:8]}@example.com",
+        hashed_password="admin_hashed_password",
+        role="admin",
+        is_deleted=False,
+    )
+    db_session.add(admin)
+    await db_session.commit()
+
+    u1_id = test_user.id
+    u2_id = test_user_2.id
+
+    try:
+        priv_res = await async_client.post(
+            "/api/v1/documents",
+            headers=_bearer_headers(test_user),
+            data={"visibility": "private"},
+            files={
+                "file": (
+                    "immut_priv.txt",
+                    io.BytesIO(f"Immutable owner private ({uuid.uuid4()})".encode()),
+                    "text/plain",
+                )
+            },
+        )
+        assert priv_res.status_code == 201
+        priv_id = uuid.UUID(priv_res.json()["id"])
+
+        pub_res = await async_client.post(
+            "/api/v1/documents",
+            headers=_bearer_headers(test_user),
+            data={"visibility": "public"},
+            files={
+                "file": (
+                    "immut_pub.txt",
+                    io.BytesIO(f"Immutable owner public ({uuid.uuid4()})".encode()),
+                    "text/plain",
+                )
+            },
+        )
+        assert pub_res.status_code == 201
+        pub_id = uuid.UUID(pub_res.json()["id"])
+
+        # 1. Owner attempting to reassign `user_id` on their own document -> rejected by DB trigger (42501)
+        await configure_rls_context(db_session, u1_id, "user")
+        with pytest.raises(DBAPIError, match="Document owner \\(user_id\\) is immutable"):
+            await db_session.execute(
+                update(Document).where(Document.id == priv_id).values(user_id=u2_id)
+            )
+        await db_session.rollback()
+
+        # 2. Owner attempting to convert their private document to public -> rejected by DB trigger (42501)
+        await configure_rls_context(db_session, u1_id, "user")
+        with pytest.raises(DBAPIError, match="Document visibility scope is immutable"):
+            await db_session.execute(
+                update(Document).where(Document.id == priv_id).values(visibility="public")
+            )
+        await db_session.rollback()
+
+        # 3. Admin attempting to hijack ownership (`user_id = admin_id`) of User A's public document -> rejected
+        await configure_rls_context(db_session, admin_id, "admin")
+        with pytest.raises(DBAPIError, match="Document owner \\(user_id\\) is immutable"):
+            await db_session.execute(
+                update(Document).where(Document.id == pub_id).values(user_id=admin_id)
+            )
+        await db_session.rollback()
+
+        # 4. Admin attempting to convert User A's public document into a private document -> rejected
+        await configure_rls_context(db_session, admin_id, "admin")
+        with pytest.raises(DBAPIError, match="Document visibility scope is immutable"):
+            await db_session.execute(
+                update(Document)
+                .where(Document.id == pub_id)
+                .values(visibility="private")
+            )
+        await db_session.rollback()
+
+        await configure_rls_context(db_session, admin_id, "admin")
+        with pytest.raises(DBAPIError, match="Document owner \\(user_id\\) is immutable"):
+            await db_session.execute(
+                update(Document)
+                .where(Document.id == pub_id)
+                .values(visibility="private", user_id=admin_id)
+            )
+        await db_session.rollback()
+
+        # 5. Admin updating a mutable field (`status = 'indexed'`) on User A's public document -> allowed
+        await configure_rls_context(db_session, admin_id, "admin")
+        upd_ok = await db_session.execute(
+            update(Document).where(Document.id == pub_id).values(status="indexed")
+        )
+        assert upd_ok.rowcount == 1
+        await db_session.commit()
+    finally:
+        clear_rls_context(db_session)
+        await db_session.rollback()
+        await purge_test_users(admin_id)
+
+
+def test_security_configuration_rejects_insecure_production_settings():
+    """Priority 4: Verify `Settings` fails startup when production JWT or DB credentials are weak or default."""
+    strong_secret = "prod-jwt-signing-key-with-more-than-32-secure-bytes-2026!"
+    secure_app_db_url = "postgresql+asyncpg://rag_app:ProdStrongDbPass_99!@localhost:5432/rag_db"
+
+    # 1. Default development SECRET_KEY in production -> rejected
+    with pytest.raises(ValueError, match="Invalid SECRET_KEY"):
+        Settings(
+            ENV="production",
+            SECRET_KEY=DEFAULT_DEV_SECRET_KEY,
+            APP_DATABASE_URL=secure_app_db_url,
+        )
+
+    # 2. Short SECRET_KEY (< 32 chars) in production -> rejected
+    with pytest.raises(ValueError, match="Invalid SECRET_KEY"):
+        Settings(
+            ENV="production",
+            SECRET_KEY="too-short-secret",
+            APP_DATABASE_URL=secure_app_db_url,
+        )
+
+    # 3. Empty SECRET_KEY even in development -> rejected
+    with pytest.raises(ValueError, match="SECRET_KEY must not be empty"):
+        Settings(
+            ENV="development",
+            SECRET_KEY="   ",
+        )
+
+    # 4. Superuser `postgres` in production APP_DATABASE_URL -> rejected
+    with pytest.raises(ValueError, match="non-superuser role"):
+        Settings(
+            ENV="production",
+            SECRET_KEY=strong_secret,
+            APP_DATABASE_URL="postgresql+asyncpg://postgres:ProdStrongDbPass_99!@localhost:5432/rag_db",
+        )
+
+    # 5. Default development DB password in production -> rejected
+    with pytest.raises(ValueError, match="default development password"):
+        Settings(
+            ENV="production",
+            SECRET_KEY=strong_secret,
+            APP_DATABASE_URL=f"postgresql+asyncpg://rag_app:{DEFAULT_DEV_APP_DB_PASSWORD}@localhost:5432/rag_db",
+        )
+
+    # 6. Valid production configuration -> accepted
+    prod_settings = Settings(
+        ENV="production",
+        SECRET_KEY=strong_secret,
+        APP_DATABASE_URL=secure_app_db_url,
+    )
+    assert prod_settings.ENV == "production"
+    assert prod_settings.app_database_url == secure_app_db_url
+
+
+@pytest.mark.asyncio
+async def test_user_enumeration_and_unauthorized_deletion_blocked(
+    async_client, test_user: User, test_user_2: User, db_session: AsyncSession
+):
+    """Verify unauthenticated callers cannot enumerate users or delete accounts,
+    and regular authenticated users cannot list users or delete other users' accounts.
+    """
+    u1_headers = _bearer_headers(test_user)
+
+    # 1. Unauthenticated user enumeration & profile endpoints -> 401 Unauthorized
+    unauth_list = await async_client.get("/api/v1/users")
+    assert unauth_list.status_code == 401
+
+    unauth_me = await async_client.get("/api/v1/users/me")
+    assert unauth_me.status_code == 401
+
+    # 2. Unauthenticated user deletion endpoints -> 401 Unauthorized
+    unauth_del_id = await async_client.delete(f"/api/v1/users/{test_user.id}")
+    assert unauth_del_id.status_code == 401
+
+    unauth_del_me = await async_client.delete("/api/v1/users/me")
+    assert unauth_del_me.status_code == 401
+
+    unauth_del_priv_col = await async_client.delete("/api/v1/users/me/private-collection")
+    assert unauth_del_priv_col.status_code == 401
+
+    # 3. Authenticated regular user attempting user enumeration -> 403 Forbidden
+    non_admin_list = await async_client.get("/api/v1/users", headers=u1_headers)
+    assert non_admin_list.status_code == 403
+
+    # 4. Authenticated regular user attempting to delete another user -> 403 Forbidden
+    non_admin_del_other = await async_client.delete(
+        f"/api/v1/users/{test_user_2.id}",
+        headers=u1_headers,
+    )
+    assert non_admin_del_other.status_code == 403
+
+    # Verify target user remains active in PostgreSQL
+    db_u2 = await db_session.get(User, test_user_2.id)
+    assert db_u2 is not None
+    assert db_u2.is_deleted is False
+
+    # 5. Authenticated regular user probing a non-existent UUID -> 403 Forbidden (no UUID existence leak)
+    non_admin_probe = await async_client.delete(
+        f"/api/v1/users/{uuid.uuid4()}",
+        headers=u1_headers,
+    )
+    assert non_admin_probe.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_authorized_user_management_and_public_document_preservation(
+    async_client, test_user: User, db_session: AsyncSession, monkeypatch
+):
+    """Verify authorized user-management rules and public-document safety:
+    - Admins can list active users (`GET /api/v1/users`) and delete user accounts (`DELETE /api/v1/users/{id}`).
+    - Regular users can perform self-service account deletion (`DELETE /api/v1/users/{own_id}` and `/me`).
+    - Deleting a user soft-deletes the account (`is_deleted = True`), immediately revokes their JWT,
+      cleans up only their private vector collection, and NEVER deletes or corrupts public documents
+      uploaded by that user.
+    """
+    cleaned_private_collections: list[uuid.UUID] = []
+
+    def _spy_delete_private_knowledge(uid: uuid.UUID) -> bool:
+        cleaned_private_collections.append(uuid.UUID(str(uid)))
+        return True
+
+    monkeypatch.setattr(users_api, "delete_user_private_knowledge", _spy_delete_private_knowledge)
+
+    admin_id = uuid.uuid4()
+    user_a_id = uuid.uuid4()
+    user_b_id = uuid.uuid4()
+    pw_hash = hash_password("TestAccountPass123!")
+
+    admin = User(
+        id=admin_id,
+        email=f"admin-mgmt-{admin_id.hex[:8]}@example.com",
+        hashed_password=pw_hash,
+        role="admin",
+        is_deleted=False,
+    )
+    user_a = User(
+        id=user_a_id,
+        email=f"user-selfdel-{user_a_id.hex[:8]}@example.com",
+        hashed_password=pw_hash,
+        role="user",
+        is_deleted=False,
+    )
+    user_b = User(
+        id=user_b_id,
+        email=f"user-admindel-{user_b_id.hex[:8]}@example.com",
+        hashed_password=pw_hash,
+        role="user",
+        is_deleted=False,
+    )
+    db_session.add_all([admin, user_a, user_b])
+    await db_session.commit()
+
+    admin_headers = _bearer_headers(admin)
+    user_a_headers = _bearer_headers(user_a)
+    user_b_headers = _bearer_headers(user_b)
+    observer_headers = _bearer_headers(test_user)
+
+    try:
+        # 1. Admin can list active users
+        list_res = await async_client.get("/api/v1/users", headers=admin_headers)
+        assert list_res.status_code == 200
+        listed_ids = {u["id"] for u in list_res.json()}
+        assert {str(admin_id), str(user_a_id), str(user_b_id), str(test_user.id)}.issubset(listed_ids)
+
+        # 2. User A and User B each upload a public document (and User A also uploads a private document)
+        pub_a_bytes = f"Shared public handbook by User A ({uuid.uuid4()})".encode()
+        priv_a_bytes = f"Private notes by User A ({uuid.uuid4()})".encode()
+        pub_b_bytes = f"Shared public architecture spec by User B ({uuid.uuid4()})".encode()
+
+        res_pub_a = await async_client.post(
+            "/api/v1/documents",
+            headers=user_a_headers,
+            data={"visibility": "public"},
+            files={"file": ("handbook_a.txt", io.BytesIO(pub_a_bytes), "text/plain")},
+        )
+        assert res_pub_a.status_code == 201
+        pub_a_id = res_pub_a.json()["id"]
+
+        res_priv_a = await async_client.post(
+            "/api/v1/documents",
+            headers=user_a_headers,
+            data={"visibility": "private"},
+            files={"file": ("notes_a.txt", io.BytesIO(priv_a_bytes), "text/plain")},
+        )
+        assert res_priv_a.status_code == 201
+        priv_a_id = res_priv_a.json()["id"]
+
+        res_pub_b = await async_client.post(
+            "/api/v1/documents",
+            headers=user_b_headers,
+            data={"visibility": "public"},
+            files={"file": ("spec_b.txt", io.BytesIO(pub_b_bytes), "text/plain")},
+        )
+        assert res_pub_b.status_code == 201
+        pub_b_id = res_pub_b.json()["id"]
+
+        await configure_rls_context(db_session, test_user.id, "user")
+        doc_pub_a = await db_session.get(Document, uuid.UUID(pub_a_id))
+        doc_pub_b = await db_session.get(Document, uuid.UUID(pub_b_id))
+        assert doc_pub_a is not None
+        assert doc_pub_b is not None
+        pub_a_path = doc_pub_a.file_path
+        pub_b_path = doc_pub_b.file_path
+
+        # 3. Self-service deletion: User A deletes their own account via `DELETE /api/v1/users/{user_a_id}`
+        self_del_res = await async_client.delete(
+            f"/api/v1/users/{user_a_id}",
+            headers=user_a_headers,
+        )
+        assert self_del_res.status_code == 200
+        assert self_del_res.json()["id"] == str(user_a_id)
+        assert self_del_res.json()["is_deleted"] is True
+        assert user_a_id in cleaned_private_collections
+
+        # User A's JWT is immediately rejected (`401`) and re-login is rejected (`401`)
+        after_self_del = await async_client.get("/api/v1/users/me", headers=user_a_headers)
+        assert after_self_del.status_code == 401
+        relogin_a = await async_client.post(
+            "/api/v1/auth/login",
+            json={"email": user_a.email, "password": "TestAccountPass123!"},
+        )
+        assert relogin_a.status_code == 401
+
+        # 4. Admin deletion: Admin deletes User B via `DELETE /api/v1/users/{user_b_id}`
+        admin_del_res = await async_client.delete(
+            f"/api/v1/users/{user_b_id}",
+            headers=admin_headers,
+        )
+        assert admin_del_res.status_code == 200
+        assert admin_del_res.json()["id"] == str(user_b_id)
+        assert admin_del_res.json()["is_deleted"] is True
+        assert user_b_id in cleaned_private_collections
+
+        # Repeat deletion of already-deleted user returns 404 Not Found
+        repeat_del_res = await async_client.delete(
+            f"/api/v1/users/{user_b_id}",
+            headers=admin_headers,
+        )
+        assert repeat_del_res.status_code == 404
+
+        # Soft-deleted users no longer appear in active user listing
+        list_after = await async_client.get("/api/v1/users", headers=admin_headers)
+        assert list_after.status_code == 200
+        active_ids_after = {u["id"] for u in list_after.json()}
+        assert str(user_a_id) not in active_ids_after
+        assert str(user_b_id) not in active_ids_after
+
+        # 5. Verify BOTH deleted users' public documents remain intact, readable, on disk, and deduplicated!
+        assert os.path.exists(pub_a_path)
+        assert os.path.exists(pub_b_path)
+
+        get_pub_a = await async_client.get(
+            f"/api/v1/documents/{pub_a_id}",
+            headers=observer_headers,
+        )
+        assert get_pub_a.status_code == 200
+        assert get_pub_a.json()["visibility"] == "public"
+
+        get_pub_b = await async_client.get(
+            f"/api/v1/documents/{pub_b_id}",
+            headers=observer_headers,
+        )
+        assert get_pub_b.status_code == 200
+        assert get_pub_b.json()["visibility"] == "public"
+
+        # Deleted User A's private document remains inaccessible to everyone (including observer & admin)
+        obs_priv_a = await async_client.get(
+            f"/api/v1/documents/{priv_a_id}",
+            headers=observer_headers,
+        )
+        assert obs_priv_a.status_code == 404
+        adm_priv_a = await async_client.get(
+            f"/api/v1/documents/{priv_a_id}",
+            headers=admin_headers,
+        )
+        assert adm_priv_a.status_code == 404
+
+        # AL-176 public deduplication still protects the public document uploaded by deleted User A
+        dup_pub_a = await async_client.post(
+            "/api/v1/documents",
+            headers=observer_headers,
+            data={"visibility": "public"},
+            files={"file": ("dup_handbook_a.txt", io.BytesIO(pub_a_bytes), "text/plain")},
+        )
+        assert dup_pub_a.status_code == 409
+    finally:
+        clear_rls_context(db_session)
+        await db_session.rollback()
+        await purge_test_users(admin_id, user_a_id, user_b_id)
+
+
+@pytest.mark.asyncio
+async def test_rag_app_postgres_privileges_and_escalation_attempts_blocked(test_user: User):
+    """Validate PostgreSQL `rag_app` role attributes, grants, zero inherited memberships,
+    and resistance to privilege escalation, RLS tampering, and hard user deletion.
+    """
+    target_uid = test_user.id
+
+    async with TestingSessionLocal() as raw_session:
+        # 1. Inspect `pg_roles` attributes for `rag_app`
+        role_row = (
+            await raw_session.execute(
+                text(
+                    "SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb, "
+                    "rolcanlogin, rolreplication, rolbypassrls "
+                    "FROM pg_roles WHERE rolname = current_user"
+                )
+            )
+        ).one()
+        assert role_row.rolname == "rag_app"
+        assert role_row.rolcanlogin is True
+        assert role_row.rolsuper is False
+        assert role_row.rolbypassrls is False
+        assert role_row.rolcreaterole is False
+        assert role_row.rolcreatedb is False
+        assert role_row.rolreplication is False
+        assert role_row.rolinherit is False
+
+        # 2. Verify `rag_app` is NOT a member of any parent role (`pg_auth_members`)
+        inherited_roles = (
+            await raw_session.execute(
+                text(
+                    "SELECT r.rolname "
+                    "FROM pg_auth_members am "
+                    "JOIN pg_roles r ON r.oid = am.roleid "
+                    "JOIN pg_roles m ON m.oid = am.member "
+                    "WHERE m.rolname = current_user"
+                )
+            )
+        ).scalars().all()
+        assert inherited_roles == []
+
+        # 3. Verify least-privilege table grants on `public` schema
+        grant_rows = (
+            await raw_session.execute(
+                text(
+                    "SELECT table_name, privilege_type "
+                    "FROM information_schema.role_table_grants "
+                    "WHERE grantee = current_user AND table_schema = 'public'"
+                )
+            )
+        ).all()
+        grants_by_table: dict[str, set[str]] = {}
+        for tbl, priv in grant_rows:
+            grants_by_table.setdefault(tbl, set()).add(priv)
+
+        assert grants_by_table.get("documents") == {"SELECT", "INSERT", "UPDATE", "DELETE"}
+        assert grants_by_table.get("users") == {"SELECT", "INSERT", "UPDATE"}
+        assert "alembic_version" not in grants_by_table
+
+        # 4. Verify `documents` has both ENABLE ROW LEVEL SECURITY and FORCE ROW LEVEL SECURITY
+        rls_flags = (
+            await raw_session.execute(
+                text(
+                    "SELECT relrowsecurity, relforcerowsecurity "
+                    "FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = 'public' AND c.relname = 'documents'"
+                )
+            )
+        ).one()
+        assert rls_flags.relrowsecurity is True
+        assert rls_flags.relforcerowsecurity is True
+        await raw_session.rollback()
+
+        # 5. Verify all privilege escalation, RLS-disabling, policy/trigger tampering, and hard user DELETE fail
+        forbidden_statements = [
+            ("SET ROLE postgres", {}),
+            ("SET SESSION AUTHORIZATION postgres", {}),
+            ("ALTER TABLE documents DISABLE ROW LEVEL SECURITY", {}),
+            ("ALTER TABLE documents NO FORCE ROW LEVEL SECURITY", {}),
+            ("DROP POLICY documents_select_policy ON documents", {}),
+            ("CREATE POLICY rag_app_bypass ON documents FOR ALL USING (true)", {}),
+            ("DROP TRIGGER trg_documents_immutable_owner_and_visibility ON documents", {}),
+            ("ALTER TABLE documents DISABLE TRIGGER trg_documents_immutable_owner_and_visibility", {}),
+            ("TRUNCATE TABLE documents", {}),
+            ("DELETE FROM users WHERE id = :uid", {"uid": target_uid}),
+            ("SELECT version_num FROM alembic_version", {}),
+            ("CREATE TABLE public.rogue_escalation_probe (id int)", {}),
+        ]
+        for sql_stmt, params in forbidden_statements:
+            with pytest.raises(DBAPIError):
+                await raw_session.execute(text(sql_stmt), params)
+            await raw_session.rollback()

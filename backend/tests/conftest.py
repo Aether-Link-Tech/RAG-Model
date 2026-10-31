@@ -8,16 +8,17 @@ from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from backend.app.api.v1 import documents as documents_api
+from backend.app.api.v1 import users as users_api
 from backend.app.core.config import settings
-from backend.app.db.rls import clear_rls_context
+from backend.app.db.rls import clear_rls_context, configure_rls_context
 from backend.app.db.session import get_db
 from backend.app.main import app
 from backend.app.models.document import Document
 from backend.app.models.user import User
 
-# Test engine with NullPool to prevent connection pooling across pytest event loops
+# Test engine with NullPool using the non-superuser `rag_app` LOGIN role
 test_engine = create_async_engine(
-    settings.DATABASE_URL,
+    settings.app_database_url,
     poolclass=NullPool,
     future=True,
 )
@@ -29,6 +30,27 @@ TestingSessionLocal = async_sessionmaker(
     autocommit=False,
     autoflush=False,
 )
+
+# Privileged teardown-only engine (since `rag_app` is strictly denied hard DELETE on `users`)
+_cleanup_engine = create_async_engine(
+    settings.migration_database_url,
+    poolclass=NullPool,
+    future=True,
+)
+_CleanupSessionLocal = async_sessionmaker(
+    bind=_cleanup_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
+
+async def purge_test_users(*user_ids: uuid.UUID) -> None:
+    """Teardown-only helper to hard-delete temporary test users via migration credentials."""
+    if not user_ids:
+        return
+    async with _CleanupSessionLocal() as cleanup_session:
+        await cleanup_session.execute(delete(User).where(User.id.in_(user_ids)))
+        await cleanup_session.commit()
 
 
 @pytest.fixture(autouse=True)
@@ -49,8 +71,16 @@ def stub_rag_indexing(monkeypatch):
     def _noop_delete_document_chunks(*args, **kwargs) -> None:
         return None
 
+    def _noop_delete_user_private_knowledge(*args, **kwargs) -> bool:
+        return False
+
     monkeypatch.setattr(documents_api, "index_document", _noop_index_document)
     monkeypatch.setattr(documents_api, "delete_document_chunks", _noop_delete_document_chunks)
+    monkeypatch.setattr(
+        users_api,
+        "delete_user_private_knowledge",
+        _noop_delete_user_private_knowledge,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -90,21 +120,23 @@ async def test_user(db_session: AsyncSession) -> AsyncGenerator[User, None]:
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
+    await configure_rls_context(db_session, user_id, "user")
 
     yield user
 
     try:
         clear_rls_context(db_session)
         await db_session.rollback()
-        await db_session.execute(delete(User).where(User.id == user_id))
-        await db_session.commit()
     except Exception:
-        await db_session.rollback()
+        pass
+    await purge_test_users(user_id)
 
 
 @pytest_asyncio.fixture
 async def test_user_2(db_session: AsyncSession) -> AsyncGenerator[User, None]:
     """Creates a second test user to verify multi-user isolation and public pool deduplication."""
+    prior_rls_uid = db_session.sync_session.info.get("rls_user_id")
+    prior_rls_role = db_session.sync_session.info.get("rls_user_role", "user")
     user_id = uuid.uuid4()
     user = User(
         id=user_id,
@@ -116,16 +148,19 @@ async def test_user_2(db_session: AsyncSession) -> AsyncGenerator[User, None]:
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
+    if prior_rls_uid:
+        await configure_rls_context(db_session, prior_rls_uid, prior_rls_role)
+    else:
+        await configure_rls_context(db_session, user_id, "user")
 
     yield user
 
     try:
         clear_rls_context(db_session)
         await db_session.rollback()
-        await db_session.execute(delete(User).where(User.id == user_id))
-        await db_session.commit()
     except Exception:
-        await db_session.rollback()
+        pass
+    await purge_test_users(user_id)
 
 
 @pytest_asyncio.fixture

@@ -88,19 +88,25 @@ async def configure_rls_context(
 
 
 async def enforce_unauthenticated_rls_context(session: AsyncSession) -> None:
-    """Activate the non-bypass `rag_app` role with an empty `app.user_id` for the transaction."""
+    """Explicitly clear `app.user_id` and `app.user_role` for the active transaction.
+
+    Note: Because normal application sessions already connect as the `rag_app` LOGIN
+    role (`NOSUPERUSER NOBYPASSRLS`), unauthenticated transactions fail closed by default
+    even if this helper is not called.
+    """
     session.sync_session.info["rls_enforced"] = True
     session.sync_session.info["rls_user_id"] = ""
     session.sync_session.info["rls_user_role"] = ""
 
-    await session.execute(text(f"SET LOCAL ROLE {RLS_DB_ROLE}"))
-    await session.execute(
-        text(
-            "SELECT "
-            "set_config('app.user_id', '', true), "
-            "set_config('app.user_role', '', true)"
+    if session.in_transaction():
+        await session.execute(text(f"SET LOCAL ROLE {RLS_DB_ROLE}"))
+        await session.execute(
+            text(
+                "SELECT "
+                "set_config('app.user_id', '', true), "
+                "set_config('app.user_role', '', true)"
+            )
         )
-    )
 
 
 def clear_rls_context(session: AsyncSession) -> None:

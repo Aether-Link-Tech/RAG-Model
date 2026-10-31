@@ -10,8 +10,9 @@ import codecs
 import os
 import uuid
 from pathlib import Path
+import logging
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -25,6 +26,16 @@ from backend.app.services.hash_service import (
     compute_sha256_and_size_stream,
 )
 from backend.app.services.vector_store import delete_document_chunks
+
+logger = logging.getLogger(__name__)
+
+async def log_security_event(user_id: str, filename: str, reason: str, ip: str):
+    """Non-blocking security audit logger. Never raises exceptions."""
+    try:
+        log_msg = f"[SECURITY AUDIT] User: {user_id} | File: {filename} | Reason: {reason} | IP: {ip}"
+        logger.warning(log_msg)
+    except Exception:
+        pass
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -55,7 +66,6 @@ def _resolve_mime(filename: str | None, declared: str | None) -> tuple[str, str]
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid file type. Only PDF, DOCX, and TXT files are allowed.",
         )
-    # The validated extension is authoritative; a declared Content-Type never overrides it.
     return suffix, ALLOWED_MIME_TYPES[suffix]
 
 
@@ -139,35 +149,40 @@ def _duplicate_conflict_detail(visibility: Visibility) -> str:
 
 @router.post("", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
+    request: Request,
     db: DbSession,
     current_user: CurrentUser,
     file: UploadFile = File(...),
     visibility: Visibility = Form("private"),
 ) -> Document:
-    """Upload a document with streaming SHA-256 hashing and scoped duplicate detection.
+    """Upload a document with streaming SHA-256 hashing and scoped duplicate detection."""
+    client_ip = request.client.host if request.client else "unknown"
+    user_id_str = str(current_user.id)
+    filename_str = file.filename or "unknown"
 
-    Consistency & Crash-Recovery Note:
-    Local filesystem storage and PostgreSQL do not share a two-phase commit
-    protocol. Uploads stream to a `.tmp` staging file, atomically rename via
-    `os.replace()`, and perform best-effort unlink + DB rollback on pre-commit
-    errors, unique-constraint races, or async cancellation. Once `db.commit()`
-    succeeds, the persisted file is never unlinked by post-commit refresh/index
-    failures. Hard process crashes (`SIGKILL` / power loss) between `os.replace`
-    and `db.commit()`, or OS unlink failures, may leave unreferenced files on
-    disk requiring periodic reconciliation.
-    """
     if visibility not in ("private", "public"):
+        await log_security_event(user_id_str, filename_str, "Invalid visibility parameter", client_ip)
         raise HTTPException(status_code=400, detail="visibility must be private or public")
 
     size_header = file.size or 0
     if size_header and size_header > settings.MAX_UPLOAD_BYTES:
+        await log_security_event(user_id_str, filename_str, "File size limit exceeded (header)", client_ip)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_max_size_message(),
         )
 
-    suffix, mime_type = _resolve_mime(file.filename, file.content_type)
-    await _validate_file_magic_bytes(file, suffix)
+    try:
+        suffix, mime_type = _resolve_mime(file.filename, file.content_type)
+    except HTTPException as exc:
+        await log_security_event(user_id_str, filename_str, f"MIME/Filename validation failed: {exc.detail}", client_ip)
+        raise
+
+    try:
+        await _validate_file_magic_bytes(file, suffix)
+    except HTTPException as exc:
+        await log_security_event(user_id_str, filename_str, f"Magic bytes validation failed: {exc.detail}", client_ip)
+        raise
 
     try:
         file_hash, file_size = await compute_sha256_and_size_stream(
@@ -176,20 +191,20 @@ async def upload_document(
             max_bytes=settings.MAX_UPLOAD_BYTES,
         )
     except FileSizeLimitExceededError as exc:
+        await log_security_event(user_id_str, filename_str, "File size limit exceeded during stream", client_ip)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_max_size_message(),
         ) from exc
 
     if file_size == 0:
+        await log_security_event(user_id_str, filename_str, "Uploaded file is empty (0 bytes)", client_ip)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Uploaded file is empty (0 bytes).",
         )
 
-    # Scoped duplicate pre-check:
-    # - private: scoped strictly to current_user.id (never probes other users' private docs)
-    # - public: scoped globally across public documents only (never probes private docs)
+    # Scoped duplicate pre-check
     if visibility == "private":
         duplicate_stmt = select(Document.id).where(
             Document.visibility == "private",
@@ -204,6 +219,7 @@ async def upload_document(
 
     existing = await db.execute(duplicate_stmt)
     if existing.scalar_one_or_none() is not None:
+        await log_security_event(user_id_str, filename_str, f"Duplicate {visibility} document conflict", client_ip)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=_duplicate_conflict_detail(visibility),
@@ -247,6 +263,7 @@ async def upload_document(
         if not committed:
             _best_effort_remove(file_path)
         await _safe_rollback(db)
+        await log_security_event(user_id_str, filename_str, "File size limit exceeded during disk write", client_ip)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_max_size_message(),
@@ -257,10 +274,12 @@ async def upload_document(
             _best_effort_remove(file_path)
         await _safe_rollback(db)
         if _is_duplicate_conflict(exc):
+            await log_security_event(user_id_str, filename_str, "Database unique constraint duplicate conflict", client_ip)
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=_duplicate_conflict_detail(visibility),
             ) from exc
+        await log_security_event(user_id_str, filename_str, "Database integrity constraint violation", client_ip)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Database integrity constraint violated during document registration.",
@@ -270,6 +289,7 @@ async def upload_document(
         if not committed:
             _best_effort_remove(file_path)
         await _safe_rollback(db)
+        await log_security_event(user_id_str, filename_str, "Filesystem storage error", client_ip)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to persist uploaded document to storage.",
@@ -281,8 +301,6 @@ async def upload_document(
             await _safe_rollback(db)
         raise
 
-    # Post-commit operations: any failure here MUST NOT unlink `file_path`
-    # because the PostgreSQL record referencing `file_path` is already committed.
     await db.refresh(document)
     return await index_document(db, document)
 
@@ -336,4 +354,4 @@ async def _owned_document(db: DbSession, user_id: uuid.UUID, document_id: uuid.U
     document = result.scalar_one_or_none()
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    return document
+    return documentS

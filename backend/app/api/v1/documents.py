@@ -92,7 +92,7 @@ def _is_duplicate_conflict(exc: IntegrityError) -> bool:
 
 async def _validate_file_magic_bytes(file: UploadFile, suffix: str) -> None:
     """Validate header signature bytes to reject trivially spoofed extensions."""
-    header = await file.read(1024)
+    header = await file.read(2048)
     await file.seek(0)
 
     if not header:
@@ -354,4 +354,4 @@ async def _owned_document(db: DbSession, user_id: uuid.UUID, document_id: uuid.U
     document = result.scalar_one_or_none()
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    return documentS
+    return document

@@ -37,6 +37,16 @@ def _owner_filter(user_id: uuid.UUID | str) -> dict[str, Any]:
     return {"user_id": {"$eq": _owner_hex(user_id)}}
 
 
+def private_owner_filter(user_id: uuid.UUID | str) -> dict[str, Any]:
+    """Mandatory filter for every private-collection read: user_id AND visibility='private'."""
+    return {
+        "$and": [
+            _owner_filter(user_id),
+            {"visibility": {"$eq": "private"}},
+        ]
+    }
+
+
 def _chunk_metadata(
     user_id: uuid.UUID | str,
     visibility: Visibility,
@@ -93,8 +103,9 @@ def query_for_user(
     """Return the top chunks the owner is allowed to see.
 
     Public hits come from the shared collection. Private hits come only from
-    this user's collection and are additionally filtered by user_id metadata so
-    another tenant's private chunks cannot leak even if collection routing fails.
+    this user's own collection (never another user's) and are additionally
+    filtered by user_id AND visibility='private' so another tenant's private
+    chunks cannot leak even if collection routing fails.
     """
     if n_results < 1:
         raise ValueError("n_results must be at least 1")
@@ -122,7 +133,7 @@ def query_for_user(
                     query_embedding=query_embedding,
                     n_results=n_results,
                     visibility="private",
-                    where=_owner_filter(user_id),
+                    where=private_owner_filter(user_id),
                 )
             )
 
@@ -191,6 +202,7 @@ def delete_document_chunks(
     where = {
         "$and": [
             _owner_filter(user_id),
+            {"visibility": {"$eq": visibility}},
             {"document_id": {"$eq": str(document_id)}},
         ]
     }

@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, HTTPException, status
 
 from backend.app.api.deps import CurrentUser
@@ -9,7 +11,16 @@ from backend.app.schemas.retrieval import (
 from backend.app.services.embedding import EmbeddingError, embed_query
 from backend.app.services.vector_store import query_for_user
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/retrieval", tags=["Retrieval"])
+
+# Internal ownership metadata never leaves the API, so public hits cannot reveal
+# which user uploaded a document.
+_INTERNAL_METADATA_KEYS = frozenset({"user_id"})
+
+
+def _public_metadata(metadata: dict) -> dict:
+    return {k: v for k, v in metadata.items() if k not in _INTERNAL_METADATA_KEYS}
 
 
 @router.post("/query", response_model=RetrievalResponse)
@@ -32,9 +43,11 @@ async def retrieve_for_current_user(
             detail=str(exc),
         ) from exc
     except Exception as exc:
+        # Internal error text can name collections/tenants; log it, don't return it.
+        logger.exception("Vector store query failed")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Vector store unavailable: {exc}",
+            detail="Vector store unavailable",
         ) from exc
 
     return RetrievalResponse(
@@ -46,7 +59,7 @@ async def retrieve_for_current_user(
                 document=hit.document,
                 distance=hit.distance,
                 visibility=hit.visibility,
-                metadata=hit.metadata,
+                metadata=_public_metadata(hit.metadata),
             )
             for hit in hits
         ],

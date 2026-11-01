@@ -35,7 +35,10 @@ class Settings(BaseConfig):
     CHROMA_HOST: str = os.getenv("CHROMA_HOST", "localhost")
     CHROMA_PORT: int = int(os.getenv("CHROMA_PORT", "8001"))
     CHROMA_PUBLIC_COLLECTION: str = os.getenv("CHROMA_PUBLIC_COLLECTION", "public_knowledge")
-    CHROMA_PRIVATE_COLLECTION_PREFIX: str = os.getenv("CHROMA_PRIVATE_COLLECTION_PREFIX", "private_user_")
+    # Must contain "{user_id}"; rendered with the owner's UUID hex.
+    CHROMA_PRIVATE_COLLECTION_TEMPLATE: str = os.getenv(
+        "CHROMA_PRIVATE_COLLECTION_TEMPLATE", "user_{user_id}_private"
+    )
     CHROMA_EMBEDDING_DIM: int = int(os.getenv("CHROMA_EMBEDDING_DIM", "768"))
 
     # Ollama

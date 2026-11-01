@@ -22,7 +22,10 @@ class DocumentCreate(DocumentBase):
 
 class DocumentResponse(DocumentBase):
     id: uuid.UUID
-    user_id: uuid.UUID
+    # Only populated for the caller's own documents; None for other users' public
+    # documents so the uploader's identity is never revealed (FR-006).
+    user_id: Optional[uuid.UUID] = None
+    is_owner: bool = False
     file_hash: str
     status: str
     visibility: Visibility

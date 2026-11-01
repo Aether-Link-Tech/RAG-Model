@@ -16,9 +16,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.v1 import documents as documents_api
+from backend.app.api.v1 import users as users_api
+from backend.app.core.security import create_access_token
 from backend.app.db.chroma import get_private_collection, get_public_collection
 from backend.app.models.document import Document
 from backend.app.models.user import User
+from backend.app.services import vector_store
 from backend.app.services.document_ingest import index_document
 from backend.tests.conftest import test_engine
 
@@ -37,13 +40,17 @@ async def require_postgres():
 
 
 @pytest.fixture(autouse=True)
-def real_indexing(monkeypatch, chroma_client, fake_embeddings):
-    """Undo conftest's no-op indexing so uploads really land in Chroma."""
+def real_vector_ops(monkeypatch, chroma_client, fake_embeddings):
+    """Undo conftest's no-op vector stubs so uploads/deletes really hit (in-memory) Chroma."""
     monkeypatch.setattr(documents_api, "index_document", index_document)
+    monkeypatch.setattr(documents_api, "delete_document_chunks", vector_store.delete_document_chunks)
+    monkeypatch.setattr(
+        users_api, "delete_user_private_knowledge", vector_store.delete_user_private_knowledge
+    )
 
 
 def _headers(user: User) -> dict[str, str]:
-    return {"X-User-Id": str(user.id)}
+    return {"Authorization": f"Bearer {create_access_token(user.id, role=user.role)}"}
 
 
 async def _upload(client, user: User, content: bytes, *, visibility="private", name="secret.txt"):

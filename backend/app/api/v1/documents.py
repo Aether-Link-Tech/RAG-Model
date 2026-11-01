@@ -151,7 +151,7 @@ async def upload_document(
     current_user: CurrentUser,
     file: UploadFile = File(...),
     visibility: Visibility = Form("private"),
-) -> Document:
+) -> DocumentResponse:
     """Upload a document with streaming SHA-256 hashing and scoped duplicate detection."""
     client_ip = request.client.host if request.client else "unknown"
     user_id_str = str(current_user.id)
@@ -299,11 +299,20 @@ async def upload_document(
         raise
 
     await db.refresh(document)
-    return await index_document(db, document)
+    return _to_response(await index_document(db, document), current_user.id)
+
+
+def _to_response(document: Document, caller_id: uuid.UUID) -> DocumentResponse:
+    """Serialize a document for `caller_id`, hiding the uploader of documents they don't own."""
+    owned = document.user_id == caller_id
+    response = DocumentResponse.model_validate(document)
+    return response.model_copy(
+        update={"is_owner": owned, "user_id": document.user_id if owned else None}
+    )
 
 
 @router.get("", response_model=list[DocumentResponse])
-async def list_documents(db: DbSession, current_user: CurrentUser) -> list[Document]:
+async def list_documents(db: DbSession, current_user: CurrentUser) -> list[DocumentResponse]:
     result = await db.execute(
         select(Document)
         .where(
@@ -314,7 +323,7 @@ async def list_documents(db: DbSession, current_user: CurrentUser) -> list[Docum
         )
         .order_by(Document.created_at.desc())
     )
-    return list(result.scalars().all())
+    return [_to_response(doc, current_user.id) for doc in result.scalars().all()]
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)
@@ -322,8 +331,10 @@ async def get_document(
     document_id: uuid.UUID,
     db: DbSession,
     current_user: CurrentUser,
-) -> Document:
-    return await _accessible_document(db, current_user.id, document_id)
+) -> DocumentResponse:
+    return _to_response(
+        await _accessible_document(db, current_user.id, document_id), current_user.id
+    )
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -16,9 +16,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.v1 import documents as documents_api
+from backend.app.api.v1 import users as users_api
+from backend.app.core.security import create_access_token
 from backend.app.db.chroma import get_private_collection, get_public_collection
 from backend.app.models.document import Document
 from backend.app.models.user import User
+from backend.app.services import vector_store
 from backend.app.services.document_ingest import index_document
 from backend.tests.conftest import test_engine
 
@@ -37,13 +40,17 @@ async def require_postgres():
 
 
 @pytest.fixture(autouse=True)
-def real_indexing(monkeypatch, chroma_client, fake_embeddings):
-    """Undo conftest's no-op indexing so uploads really land in Chroma."""
+def real_vector_ops(monkeypatch, chroma_client, fake_embeddings):
+    """Undo conftest's no-op vector stubs so uploads/deletes really hit (in-memory) Chroma."""
     monkeypatch.setattr(documents_api, "index_document", index_document)
+    monkeypatch.setattr(documents_api, "delete_document_chunks", vector_store.delete_document_chunks)
+    monkeypatch.setattr(
+        users_api, "delete_user_private_knowledge", vector_store.delete_user_private_knowledge
+    )
 
 
 def _headers(user: User) -> dict[str, str]:
-    return {"X-User-Id": str(user.id)}
+    return {"Authorization": f"Bearer {create_access_token(user.id, role=user.role)}"}
 
 
 async def _upload(client, user: User, content: bytes, *, visibility="private", name="secret.txt"):
@@ -123,6 +130,30 @@ async def test_tc_iso_api_03_retrieval_response_hides_owner_ids(
         assert "user_id" not in hit["metadata"]
         assert str(test_user.id) not in str(hit)
         assert test_user.id.hex not in str(hit)
+
+
+async def test_tc_iso_api_05_document_endpoints_hide_public_uploader(
+    async_client, test_user: User, test_user_2: User
+):
+    """Other users can see a public document, but never who uploaded it."""
+    doc = await _upload(async_client, test_user, b"alpha public policy", visibility="public", name="policy.txt")
+    assert doc["user_id"] == str(test_user.id)
+    assert doc["is_owner"] is True
+
+    b_list = await async_client.get("/api/v1/documents", headers=_headers(test_user_2))
+    assert b_list.status_code == 200
+    b_view = next(d for d in b_list.json() if d["id"] == doc["id"])
+    b_get = await async_client.get(f"/api/v1/documents/{doc['id']}", headers=_headers(test_user_2))
+    assert b_get.status_code == 200
+
+    for view in (b_view, b_get.json()):
+        assert view["user_id"] is None
+        assert view["is_owner"] is False
+        assert str(test_user.id) not in str(view)
+
+    a_get = await async_client.get(f"/api/v1/documents/{doc['id']}", headers=_headers(test_user))
+    assert a_get.json()["user_id"] == str(test_user.id)
+    assert a_get.json()["is_owner"] is True
 
 
 async def test_tc_iso_api_04_deleting_user_removes_only_their_private_collection(

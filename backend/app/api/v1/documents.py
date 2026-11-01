@@ -3,8 +3,8 @@
 Protected by Bearer JWT authentication (`CurrentUser`) and PostgreSQL Row-Level
 Security (AL-127 / AL-129) via transaction-local `app.user_id` and `app.user_role`.
 """
-import codecs
 import asyncio
+import codecs
 import logging
 import os
 import uuid

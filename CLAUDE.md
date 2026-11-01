@@ -39,8 +39,11 @@ CI: `.github/workflows/backend-tests.yml` runs the suite on PRs/pushes to `devel
 - Private vectors live only in `user_{user_id}_private` (template `CHROMA_PRIVATE_COLLECTION_TEMPLATE`); public in `CHROMA_PUBLIC_COLLECTION`.
 - Every private Chroma read uses `private_owner_filter()` (user_id AND visibility='private'). Never open another user's private collection.
 - API responses must not expose internal ownership metadata (`user_id` in chunk metadata) or raw exception text.
+- Document responses show `user_id` only for the caller's own documents (`is_owner`); other users' public docs return `user_id: null`.
 - Duplicate detection is SHA-256, scoped: per-user for private, global for public (partial unique indexes).
-- Auth is currently the dev-only `X-User-Id` header; JWT + PostgreSQL RLS is in progress on branch `al-127-129-rls-jwt-auth`.
+- Auth: Bearer JWT (`POST /api/v1/auth/login`). The app connects as the non-superuser `rag_app` role; PostgreSQL RLS on `documents` uses transaction-local `app.user_id` / `app.user_role` (`backend/app/db/rls.py`).
+- Every new table's migration must `GRANT` privileges to `rag_app` and add RLS policies, or requests fail with "permission denied".
+- Tests authenticate with `create_access_token(user.id, role=user.role)`; hard user deletes in teardown use the migration (superuser) URL.
 
 ## Jira
 REST API with user env vars `JIRA_EMAIL` / `JIRA_TOKEN`; site `https://final-team-ho4yb920.atlassian.net`, project `AL`.

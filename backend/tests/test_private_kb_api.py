@@ -132,6 +132,30 @@ async def test_tc_iso_api_03_retrieval_response_hides_owner_ids(
         assert test_user.id.hex not in str(hit)
 
 
+async def test_tc_iso_api_05_document_endpoints_hide_public_uploader(
+    async_client, test_user: User, test_user_2: User
+):
+    """Other users can see a public document, but never who uploaded it."""
+    doc = await _upload(async_client, test_user, b"alpha public policy", visibility="public", name="policy.txt")
+    assert doc["user_id"] == str(test_user.id)
+    assert doc["is_owner"] is True
+
+    b_list = await async_client.get("/api/v1/documents", headers=_headers(test_user_2))
+    assert b_list.status_code == 200
+    b_view = next(d for d in b_list.json() if d["id"] == doc["id"])
+    b_get = await async_client.get(f"/api/v1/documents/{doc['id']}", headers=_headers(test_user_2))
+    assert b_get.status_code == 200
+
+    for view in (b_view, b_get.json()):
+        assert view["user_id"] is None
+        assert view["is_owner"] is False
+        assert str(test_user.id) not in str(view)
+
+    a_get = await async_client.get(f"/api/v1/documents/{doc['id']}", headers=_headers(test_user))
+    assert a_get.json()["user_id"] == str(test_user.id)
+    assert a_get.json()["is_owner"] is True
+
+
 async def test_tc_iso_api_04_deleting_user_removes_only_their_private_collection(
     async_client, test_user: User, test_user_2: User
 ):

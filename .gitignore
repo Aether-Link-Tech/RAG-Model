@@ -47,6 +47,8 @@ postgres_data/
 redis_data/
 chroma_data/
 uploads/
+backend/uploads/
+backend/users/
 
 # IDE & OS
 .vscode/

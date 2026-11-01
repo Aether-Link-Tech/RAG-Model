@@ -106,6 +106,8 @@ RAG-Model/
 
 ## 🔄 End-to-End Data Flow
 
+> **Note:** The diagrams below show the *target* architecture. For what is actually built today (auth + RLS, upload, retrieval, DB roles, migrations) and a requirement-by-requirement status (RQ001–RQ060), see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ```mermaid
 flowchart TD
     subgraph Client [Frontend UI - React 19]

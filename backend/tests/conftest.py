@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 import pytest
 import pytest_asyncio
@@ -114,6 +115,49 @@ async def test_user_2(db_session: AsyncSession) -> AsyncGenerator[User, None]:
             await db_session.commit()
     except Exception:
         await db_session.rollback()
+
+
+FAKE_EMBEDDING_DIM = 16
+
+
+def fake_embed(text: str) -> list[float]:
+    """Deterministic bag-of-words embedding: shared words => nearby vectors."""
+    vector = [0.0] * FAKE_EMBEDDING_DIM
+    for word in text.lower().split():
+        digest = hashlib.sha256(word.encode("utf-8")).digest()
+        vector[digest[0] % FAKE_EMBEDDING_DIM] += 1.0
+    if not any(vector):
+        vector[0] = 1.0
+    return vector
+
+
+@pytest.fixture
+def chroma_client(monkeypatch):
+    """In-memory ChromaDB replacing the HTTP client; emptied after each test."""
+    import chromadb
+    from backend.app.db import chroma as chroma_module
+
+    client = chromadb.EphemeralClient()
+    monkeypatch.setattr(chroma_module, "get_chroma_client", lambda: client)
+    yield client
+    for collection in client.list_collections():
+        client.delete_collection(getattr(collection, "name", collection))
+
+
+@pytest.fixture
+def fake_embeddings(monkeypatch):
+    """Replace Ollama embedding calls with the deterministic fake_embed."""
+    from backend.app.api.v1 import retrieval as retrieval_api
+    from backend.app.services import document_ingest
+
+    async def _embed_texts(texts):
+        return [fake_embed(t) for t in texts]
+
+    async def _embed_query(text):
+        return fake_embed(text)
+
+    monkeypatch.setattr(document_ingest, "embed_texts", _embed_texts)
+    monkeypatch.setattr(retrieval_api, "embed_query", _embed_query)
 
 
 @pytest_asyncio.fixture

@@ -85,6 +85,19 @@ def stub_rag_indexing(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def stub_clamav_scan(request, monkeypatch):
+    """Upload tests must not need a live ClamAV daemon (FR-066).
+
+    The scan is a no-op unless a test is marked `clamav_scan`, which keeps the
+    real scan_and_quarantine (tests then fake the clamd client or need ClamAV).
+    `raising=False` keeps this harmless before FR-066 is merged.
+    """
+    if request.node.get_closest_marker("clamav_scan"):
+        return
+    monkeypatch.setattr(documents_api, "scan_and_quarantine", lambda path: None, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def override_db_dependency():
     """Ensure every FastAPI request gets a fresh AsyncSession with NullPool."""
     async def _test_get_db() -> AsyncGenerator[AsyncSession, None]:

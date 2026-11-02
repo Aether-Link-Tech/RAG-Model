@@ -2,13 +2,19 @@
 
 Private chunks are stored only in the owner's collection and queried with an
 explicit user_id metadata filter. Callers never pass a target user other than
-the authenticated owner.
+the authenticated owner. All user-facing retrievals use PostgreSQL RLS-backed
+chunk authorization (AL-128), validating retrieved vector IDs against PostgreSQL
+document Row-Level Security policies.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, Sequence
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.chroma import (
     delete_private_collection,
@@ -16,8 +22,19 @@ from backend.app.db.chroma import (
     get_private_collection,
     get_public_collection,
 )
+from backend.app.models.document import Document
+
+logger = logging.getLogger(__name__)
 
 Visibility = Literal["private", "public"]
+
+
+class VectorStoreError(RuntimeError):
+    """Raised when ChromaDB operations fail unexpectedly."""
+
+
+class DatabaseAuthorizationError(RuntimeError):
+    """Raised when PostgreSQL authorization query fails."""
 
 
 @dataclass(frozen=True)
@@ -142,13 +159,43 @@ def query_for_user(
     return hits[:n_results]
 
 
+def is_valid_chunk_metadata(
+    metadata: Any,
+    expected_visibility: Visibility,
+    expected_owner_hex: Optional[str] = None,
+) -> bool:
+    """Verify that chunk metadata has valid document_id, visibility, and user_id.
+
+    Missing, malformed, or inconsistent metadata must never grant access.
+    """
+    if not isinstance(metadata, dict):
+        return False
+
+    # 1. document_id must be present and a valid UUID
+    doc_id = metadata.get("document_id")
+    if not doc_id:
+        return False
+    try:
+        uuid.UUID(str(doc_id))
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+    # 2. visibility in metadata must match expected collection visibility
+    vis = metadata.get("visibility")
+    if vis != expected_visibility or vis not in ("private", "public"):
+        return False
+
+    # 3. If private, user_id must be present and match expected owner hex
+    if expected_visibility == "private":
+        owner = metadata.get("user_id")
+        if not owner or (expected_owner_hex and owner != expected_owner_hex):
+            return False
+
+    return True
+
+
 def _is_visible_to_owner(hit: RetrievedChunk, owner: str) -> bool:
-    if hit.visibility == "public":
-        return hit.metadata.get("visibility") == "public"
-    return (
-        hit.metadata.get("visibility") == "private"
-        and hit.metadata.get("user_id") == owner
-    )
+    return is_valid_chunk_metadata(hit.metadata, hit.visibility, owner)
 
 
 def _query_collection(
@@ -169,8 +216,9 @@ def _query_collection(
             where=where,
             include=["documents", "metadatas", "distances"],
         )
-    except Exception:
-        return []
+    except Exception as exc:
+        logger.exception("ChromaDB query failed on %s collection", visibility)
+        raise VectorStoreError(f"ChromaDB query failed: {exc}") from exc
     ids = (raw.get("ids") or [[]])[0]
     documents = (raw.get("documents") or [[]])[0]
     metadatas = (raw.get("metadatas") or [[]])[0]
@@ -190,6 +238,122 @@ def _query_collection(
             )
         )
     return chunks
+
+
+async def authorize_retrieved_chunks(
+    *,
+    db: AsyncSession,
+    user_id: uuid.UUID | str,
+    chunks: Sequence[RetrievedChunk],
+) -> list[RetrievedChunk]:
+    """Authorize retrieved ChromaDB vector chunks against PostgreSQL document RLS (AL-128).
+
+    Provides PostgreSQL RLS-backed chunk authorization: ChromaDB retrieves candidate
+    vector hits, and their parent document IDs are validated in batch against PostgreSQL
+    under transaction-local Row-Level Security (`app.user_id`).
+    Ensures every returned chunk belongs to an active, accessible document in PostgreSQL
+    visible to the authenticated user under RLS policies, and whose metadata is strictly
+    consistent with database records.
+    """
+    if not chunks:
+        return []
+
+    owner_uuid = uuid.UUID(str(user_id)) if isinstance(user_id, str) else user_id
+    owner_hex = owner_uuid.hex
+
+    valid_candidates: list[tuple[RetrievedChunk, uuid.UUID]] = []
+    doc_ids_to_query: set[uuid.UUID] = set()
+
+    for chunk in chunks:
+        if not is_valid_chunk_metadata(chunk.metadata, chunk.visibility, owner_hex):
+            continue
+        try:
+            doc_uuid = uuid.UUID(str(chunk.metadata["document_id"]))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        valid_candidates.append((chunk, doc_uuid))
+        doc_ids_to_query.add(doc_uuid)
+
+    if not valid_candidates or not doc_ids_to_query:
+        return []
+
+    try:
+        stmt = select(
+            Document.id,
+            Document.user_id,
+            Document.visibility,
+            Document.status,
+        ).where(Document.id.in_(list(doc_ids_to_query)))
+        result = await db.execute(stmt)
+        authorized_docs = {row.id: row for row in result.all()}
+    except Exception as exc:
+        logger.exception("Database authorization check failed under RLS")
+        raise DatabaseAuthorizationError(
+            "Failed to verify document access in PostgreSQL"
+        ) from exc
+
+    authorized_chunks: list[RetrievedChunk] = []
+    for chunk, doc_uuid in valid_candidates:
+        doc = authorized_docs.get(doc_uuid)
+        if doc is None:
+            # Document either does not exist, was deleted, or is blocked by PostgreSQL RLS
+            continue
+
+        if doc.status != "indexed":
+            continue
+
+        if doc.visibility != chunk.visibility:
+            continue
+
+        if chunk.visibility == "private":
+            if doc.user_id != owner_uuid:
+                continue
+            if chunk.metadata.get("user_id") != owner_hex:
+                continue
+        elif chunk.visibility == "public":
+            if chunk.metadata.get("visibility") != "public":
+                continue
+        else:
+            continue
+
+        authorized_chunks.append(chunk)
+
+    return authorized_chunks
+
+
+async def query_authorized_chunks(
+    *,
+    db: AsyncSession,
+    user_id: uuid.UUID | str,
+    query_embedding: Sequence[float],
+    n_results: int = 10,
+    include_public: bool = True,
+    include_private: bool = True,
+) -> list[RetrievedChunk]:
+    """Retrieve and authorize top-k chunks for an authenticated user (AL-128).
+
+    Queries ChromaDB collections and filters candidates through PostgreSQL RLS authorization.
+    """
+    if n_results < 1:
+        raise ValueError("n_results must be at least 1")
+
+    fetch_count = max(n_results * 2, 10)
+    candidates = query_for_user(
+        user_id=user_id,
+        query_embedding=query_embedding,
+        n_results=fetch_count,
+        include_public=include_public,
+        include_private=include_private,
+    )
+
+    authorized = await authorize_retrieved_chunks(
+        db=db,
+        user_id=user_id,
+        chunks=candidates,
+    )
+
+    authorized.sort(key=lambda hit: hit.distance)
+    return authorized[:n_results]
 
 
 def delete_document_chunks(

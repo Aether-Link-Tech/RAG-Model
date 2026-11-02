@@ -2,14 +2,18 @@ import logging
 
 from fastapi import APIRouter, HTTPException, status
 
-from backend.app.api.deps import CurrentUser
+from backend.app.api.deps import CurrentUser, DbSession
 from backend.app.schemas.retrieval import (
     RetrievalQuery,
     RetrievalResponse,
     RetrievedChunkResponse,
 )
 from backend.app.services.embedding import EmbeddingError, embed_query
-from backend.app.services.vector_store import query_for_user
+from backend.app.services.vector_store import (
+    DatabaseAuthorizationError,
+    VectorStoreError,
+    query_authorized_chunks,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/retrieval", tags=["Retrieval"])
@@ -27,10 +31,12 @@ def _public_metadata(metadata: dict) -> dict:
 async def retrieve_for_current_user(
     payload: RetrievalQuery,
     current_user: CurrentUser,
+    db: DbSession,
 ) -> RetrievalResponse:
     try:
         query_embedding = await embed_query(payload.query)
-        hits = query_for_user(
+        hits = await query_authorized_chunks(
+            db=db,
             user_id=current_user.id,
             query_embedding=query_embedding,
             n_results=payload.n_results,
@@ -42,12 +48,18 @@ async def retrieve_for_current_user(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
-    except Exception as exc:
-        # Internal error text can name collections/tenants; log it, don't return it.
-        logger.exception("Vector store query failed")
+    except (VectorStoreError, DatabaseAuthorizationError) as exc:
+        logger.exception("Retrieval vector store or database authorization failed")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Vector store unavailable",
+        ) from exc
+    except Exception as exc:
+        # Internal error text can name collections/tenants; log it, don't return it.
+        logger.exception("Unexpected error during retrieval")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Retrieval service unavailable",
         ) from exc
 
     return RetrievalResponse(

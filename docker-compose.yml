@@ -44,6 +44,14 @@ services:
       - PERSIST_DIRECTORY=/chroma/chroma
       - ANONYMIZED_TELEMETRY=FALSE
 
+  parser-sandbox:
+    build:
+      context: docker/parser
+      dockerfile: Dockerfile
+    image: rag-parser-sandbox:latest
+    profiles:
+      - parser-build
+
 volumes:
   postgres_data:
   redis_data:

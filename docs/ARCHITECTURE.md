@@ -168,7 +168,77 @@ flowchart TD
 
 Chunk metadata stored in Chroma: `document_id`, `filename`, `chunk_index`, `user_id` (hex), `visibility`. Chunk IDs: `"{document_id}:{index}"`.
 
-### 4.3 Document status lifecycle
+### 4.3 Sandboxed File Parsing (FR-067 / AL-163 & AL-164)
+
+To prevent remote code execution, server-side request forgery (SSRF), memory corruption, or host filesystem compromises originating from weaponized or malformed uploaded documents, file parsing is strictly isolated inside a dedicated ephemeral Docker container (`rag-parser-sandbox:latest`).
+
+#### Architectural Principles & Isolation Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant I as document_ingest.index_document
+    participant P as document_parser.extract_text
+    participant D as Docker Engine
+    participant C as Ephemeral Sandbox Container (rag-parser-sandbox)
+    participant FS as Host File System (/uploads/:ro)
+
+    I->>P: extract_text(file_path, mime_type, filename)
+    Note over P: Check PARSER_SANDBOX_ENABLED (fail-closed if True)
+    P->>D: docker run [security flags] [resource limits] rag-parser-sandbox /input/file mime_type
+    D->>C: Spawn container (UID 10001, net:none, rootfs:ro, mem:512m, cpu:1.0)
+    C->>FS: Read input file (mounted strictly :ro)
+    C->>C: runner.py: PyPDF2 / python-docx / UTF-8 txt
+    alt Parse Success (<60s)
+        C-->>D: Extracted text to stdout (exit code 0)
+        D-->>P: stdout text
+        P-->>I: return clean text
+    else Parse Timeout (>60s)
+        P->>D: docker rm -f <container_name>
+        P-->>I: raise ParserTimeoutError -> mark document 'failed'
+    else OOM / Memory Limit (>512 MB)
+        C-->>D: Container killed (exit code 137)
+        P->>D: docker rm -f <container_name>
+        P-->>I: raise ParserSandboxError (OOM) -> mark document 'failed'
+    else Corrupt / Exploited File (exit 1)
+        C-->>D: Stderr error snippet (exit code 1)
+        P->>D: docker rm -f <container_name>
+        P-->>I: raise ParserSandboxError -> mark document 'failed'
+    end
+```
+
+#### Security Hardening Specifications (AL-163)
+
+1. **Complete Network Isolation (`--network none`):**
+   - The container has no network interfaces other than loopback (`lo`). Any outbound network access attempts (data exfiltration, reverse shells, SSRF) immediately fail with unreachable network errors.
+2. **Read-Only Root Filesystem (`--read-only`):**
+   - The entire root filesystem is immutable. Malware attempting to write droppers or alter system binaries fails with `Read-only file system` errors.
+   - An ephemeral in-memory tmpfs is provided at `/tmp` (`--tmpfs /tmp:rw,noexec,nosuid,size=64m`) for parsers requiring scratch memory, with execution and setuid disabled.
+3. **Privilege Escalation Prevention:**
+   - `--security-opt no-new-privileges:true`: Prevents processes inside the container from gaining additional privileges via `setuid` or `setgid` binaries.
+   - `--cap-drop ALL`: Strips all Linux kernel capabilities from the container.
+   - `--user 10001:10001`: Container process executes as an unprivileged dedicated non-root user (`sandboxuser`).
+4. **Read-Only Input Volume Mounting (`-v host:container:ro`):**
+   - The host file is mounted directly into `/input/<filename>:ro`. The container cannot modify, truncate, or tamper with the uploaded source file.
+5. **Standardized I/O Communication:**
+   - Extracted text is written directly to standard output (`stdout`). Error diagnostics are written to standard error (`stderr`). Exit code 0 indicates success, 2 indicates unsupported document, and other non-zero codes indicate parser failure.
+
+#### Resource Bounds & Lifecycle Management (AL-164)
+
+1. **Memory Ceiling (`--memory 512m --memory-swap 512m`):**
+   - Strictly confines container memory usage to 512 megabytes. Memory decompression bombs or runaway allocations are immediately terminated by Docker's OOM killer (exit code 137).
+2. **CPU Limit (`--cpus 1.0`):**
+   - Restricts CPU execution to 1 core, preventing malicious documents or infinite regex loops from exhausting host processor resources.
+3. **Process/Fork-Bomb Ceiling (`--pids-limit 64`):**
+   - Restricts the maximum number of simultaneous processes and threads to 64, blocking process table exhaustion.
+4. **Execution Timeout (60 Seconds):**
+   - Subprocess execution is strictly capped at `PARSER_TIMEOUT_SECONDS = 60`. If a document hangs or loops, the Python manager terminates the process and invokes `_kill_and_remove_container` (`docker rm -f`).
+5. **Guaranteed Container Cleanup:**
+   - Containers are invoked with `--rm`. In addition, `_kill_and_remove_container` is explicitly invoked in timeout, error, and process cancellation handlers to guarantee no orphaned or hung containers persist.
+6. **Fail-Closed Security Policy:**
+   - When `PARSER_SANDBOX_ENABLED=True` (production default), failures never silently fall back to in-process execution. If Docker is unavailable or parsing fails, the document is immediately marked as `failed` with an explicit audit log. In-process parsing is permitted exclusively in isolated unit test environments when `PARSER_SANDBOX_ENABLED=False`.
+
+### 4.4 Document status lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -181,7 +251,7 @@ stateDiagram-v2
     note right of failed: retry not implemented (RQ022)
 ```
 
-### 4.4 Retrieval (semantic search and PostgreSQL RLS-backed chunk authorization - AL-128)
+### 4.5 Retrieval (semantic search and PostgreSQL RLS-backed chunk authorization - AL-128)
 
 > **Architectural Clarification on AL-128:**
 > The original Jira task AL-128 was titled *"Enable RLS on chunks table"*. In this architecture:
@@ -243,7 +313,7 @@ sequenceDiagram
 
 There's no BM25, hybrid fusion, re-ranking, threshold or LLM answer yet (RQ024–RQ033).
 
-### 4.5 Delete a document, delete an account
+### 4.6 Delete a document, delete an account
 
 ```mermaid
 flowchart TD

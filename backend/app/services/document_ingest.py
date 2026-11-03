@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 import uuid
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from backend.app.core.config import settings
 from backend.app.models.document import Document
 from backend.app.services.chunking import split_text
 from backend.app.services.document_parser import (
+    DocumentParserError,
     UnsupportedDocumentError,
     extract_text,
 )
@@ -27,8 +30,15 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
     await db.commit()
     await db.refresh(document)
 
+    cancel_event = threading.Event()
     try:
-        text = extract_text(document.file_path, document.mime_type, document.filename)
+        text = await asyncio.to_thread(
+            extract_text,
+            document.file_path,
+            document.mime_type,
+            document.filename,
+            cancel_event=cancel_event,
+        )
         chunks = split_text(text)
         if not chunks:
             raise IngestError("No extractable text found in document")
@@ -54,7 +64,23 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
         )
         document.status = "indexed"
         document.error_message = None
-    except (UnsupportedDocumentError, EmbeddingError, IngestError, OSError, ValueError) as exc:
+    except asyncio.CancelledError:
+        cancel_event.set()
+        document.status = "failed"
+        document.error_message = "Document indexing was cancelled"
+        try:
+            await db.commit()
+        except Exception:
+            pass
+        raise
+    except (
+        DocumentParserError,
+        UnsupportedDocumentError,
+        EmbeddingError,
+        IngestError,
+        OSError,
+        ValueError,
+    ) as exc:
         document.status = "failed"
         document.error_message = str(exc)
 

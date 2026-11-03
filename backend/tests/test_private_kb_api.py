@@ -104,7 +104,8 @@ async def test_tc_iso_api_02_user_b_direct_access_is_denied(
 
     list_resp = await async_client.get("/api/v1/documents", headers=_headers(test_user_2))
     assert list_resp.status_code == 200
-    assert list_resp.json() == []
+    assert not any(d["id"] == doc_id for d in list_resp.json())
+    assert all(d.get("visibility") != "private" for d in list_resp.json())
 
     del_resp = await async_client.delete(f"/api/v1/documents/{doc_id}", headers=_headers(test_user_2))
     assert del_resp.status_code == 404

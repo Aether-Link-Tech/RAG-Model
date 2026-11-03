@@ -38,6 +38,7 @@ CI: `.github/workflows/backend-tests.yml` runs the suite on PRs/pushes to `devel
 - Every document query is scoped to the current user (`Document.user_id == current_user.id`); cross-user access returns **404**, not 403, so existence isn't leaked.
 - Private vectors live only in `user_{user_id}_private` (template `CHROMA_PRIVATE_COLLECTION_TEMPLATE`); public in `CHROMA_PUBLIC_COLLECTION`.
 - Every private Chroma read uses `private_owner_filter()` (user_id AND visibility='private'). Never open another user's private collection.
+- Chunk retrieval authorization (AL-128): All retrieval endpoints and RAG workflows must use `query_authorized_chunks(db, user_id, ...)`. This implements PostgreSQL RLS-backed chunk authorization (validating candidate ChromaDB chunks against PostgreSQL document RLS in batch, rather than a literal RLS policy on ChromaDB). Stale, foreign, deleted, or metadata-inconsistent chunks are discarded before returning results or LLM context.
 - API responses must not expose internal ownership metadata (`user_id` in chunk metadata) or raw exception text.
 - Document responses show `user_id` only for the caller's own documents (`is_owner`); other users' public docs return `user_id: null`.
 - Duplicate detection is SHA-256, scoped: per-user for private, global for public (partial unique indexes).

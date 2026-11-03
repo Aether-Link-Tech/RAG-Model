@@ -49,7 +49,7 @@ chroma_data/
 uploads/
 backend/uploads/
 backend/users/
-
+storage/
 # IDE & OS
 .vscode/
 .idea/

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-import selectors
+import queue
 import subprocess
 import threading
 import time
@@ -183,61 +183,70 @@ def _communicate_with_limits(
 
     Prevents unbounded memory consumption on the host backend and ensures rapid
     interruption when cancelled.
+
+    Cross-platform: one reader thread per pipe feeds a queue. (`selectors` only
+    supports sockets on Windows and `os.set_blocking` is missing there before
+    Python 3.12, so the previous implementation failed on Windows hosts.)
     """
     if proc.stdout is None or proc.stderr is None:
         raise ParserSandboxError("Subprocess pipes are unavailable")
 
-    os.set_blocking(proc.stdout.fileno(), False)
-    os.set_blocking(proc.stderr.fileno(), False)
+    chunks: "queue.Queue[tuple[str, Optional[bytes]]]" = queue.Queue()
 
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stdout, selectors.EVENT_READ)
-    sel.register(proc.stderr, selectors.EVENT_READ)
+    def _pump(stream, tag: str) -> None:
+        reader = getattr(stream, "read1", stream.read)
+        try:
+            while True:
+                data = reader(65536)
+                if not data:
+                    break
+                chunks.put((tag, data))
+        except (OSError, ValueError):
+            pass  # pipe closed because the container was killed
+        finally:
+            chunks.put((tag, None))
+
+    for stream, tag in ((proc.stdout, "stdout"), (proc.stderr, "stderr")):
+        threading.Thread(target=_pump, args=(stream, tag), daemon=True).start()
 
     stdout_chunks: list[bytes] = []
     stderr_chunks: list[bytes] = []
     stdout_bytes = 0
     stderr_bytes = 0
+    open_streams = 2
     deadline = time.monotonic() + timeout_seconds
 
-    try:
-        while sel.get_map():
-            if cancel_event and cancel_event.is_set():
-                raise ParserCancelledError("Parsing operation was cancelled by caller")
+    while open_streams:
+        if cancel_event and cancel_event.is_set():
+            raise ParserCancelledError("Parsing operation was cancelled by caller")
 
-            now = time.monotonic()
-            if now >= deadline:
-                raise subprocess.TimeoutExpired(cmd=proc.args, timeout=timeout_seconds)
+        now = time.monotonic()
+        if now >= deadline:
+            raise subprocess.TimeoutExpired(cmd=proc.args, timeout=timeout_seconds)
 
-            timeout_quantum = min(0.2, max(0.01, deadline - now))
-            events = sel.select(timeout=timeout_quantum)
+        try:
+            tag, chunk = chunks.get(timeout=min(0.2, max(0.01, deadline - now)))
+        except queue.Empty:
+            continue
 
-            for key, _ in events:
-                try:
-                    chunk = os.read(key.fd, 65536)
-                except (BlockingIOError, InterruptedError):
-                    continue
+        if chunk is None:
+            open_streams -= 1
+            continue
 
-                if not chunk:
-                    sel.unregister(key.fileobj)
-                    continue
+        if tag == "stdout":
+            stdout_bytes += len(chunk)
+            if stdout_bytes > max_output_bytes:
+                raise ParserOutputLimitExceededError(
+                    f"Extracted document text exceeded maximum size limit of {max_output_bytes} bytes"
+                )
+            stdout_chunks.append(chunk)
+        else:
+            if stderr_bytes < max_stderr_bytes:
+                stderr_chunks.append(chunk[: max_stderr_bytes - stderr_bytes])
+            stderr_bytes += len(chunk)
 
-                if key.fileobj is proc.stdout:
-                    stdout_bytes += len(chunk)
-                    if stdout_bytes > max_output_bytes:
-                        raise ParserOutputLimitExceededError(
-                            f"Extracted document text exceeded maximum size limit of {max_output_bytes} bytes"
-                        )
-                    stdout_chunks.append(chunk)
-                elif key.fileobj is proc.stderr:
-                    if stderr_bytes < max_stderr_bytes:
-                        stderr_chunks.append(chunk[: max_stderr_bytes - stderr_bytes])
-                    stderr_bytes += len(chunk)
-
-        remaining = max(0.1, deadline - time.monotonic())
-        proc.wait(timeout=remaining)
-    finally:
-        sel.close()
+    remaining = max(0.1, deadline - time.monotonic())
+    proc.wait(timeout=remaining)
 
     stdout_text = b"".join(stdout_chunks).decode("utf-8", errors="replace")
     stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")

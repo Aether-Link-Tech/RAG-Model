@@ -10,6 +10,7 @@ from pathlib import Path
 import logging
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Request, status
+from fastapi.responses import FileResponse
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
@@ -334,6 +335,35 @@ async def get_document(
 ) -> DocumentResponse:
     return _to_response(
         await _accessible_document(db, current_user.id, document_id), current_user.id
+    )
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    document_id: uuid.UUID,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> FileResponse:
+    """Download an accessible document file (AL-182)."""
+    document = await _accessible_document(db, current_user.id, document_id)
+    
+    if not document.file_path or not os.path.exists(document.file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found on storage server.",
+        )
+
+    await log_security_event(
+        user_id=str(current_user.id),
+        filename=document.filename,
+        reason="Document downloaded successfully",
+        ip="internal",
+    )
+
+    return FileResponse(
+        path=document.file_path,
+        filename=document.filename,
+        media_type=document.mime_type,
     )
 
 

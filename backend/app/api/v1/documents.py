@@ -344,24 +344,26 @@ async def download_document(
     db: DbSession,
     current_user: CurrentUser,
 ) -> FileResponse:
-    """Download an accessible document file (AL-182)."""
+    """Download an accessible document file (AL-182).
+
+    Own documents and public documents only; another user's private document
+    is 404 (same rule as GET /documents/{id}). The stored path is never exposed.
+    """
     document = await _accessible_document(db, current_user.id, document_id)
-    
-    if not document.file_path or not os.path.exists(document.file_path):
+
+    upload_root = Path(settings.UPLOAD_DIR).resolve()
+    stored_path = Path(document.file_path or "").resolve()
+    if not stored_path.is_relative_to(upload_root) or not stored_path.is_file():
+        # Missing file, or a stored path outside the upload area: never serve it.
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found on storage server.",
         )
 
-    await log_security_event(
-        user_id=str(current_user.id),
-        filename=document.filename,
-        reason="Document downloaded successfully",
-        ip="internal",
-    )
+    logger.info("Document %s downloaded by user %s", document.id, current_user.id)
 
     return FileResponse(
-        path=document.file_path,
+        path=stored_path,
         filename=document.filename,
         media_type=document.mime_type,
     )

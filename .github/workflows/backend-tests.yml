@@ -46,6 +46,9 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r backend/requirements.txt
 
+      - name: Build parser sandbox image
+        run: docker build -t rag-parser-sandbox:latest docker/parser
+
       - name: Run migrations
         run: alembic -c backend/alembic.ini upgrade head
 

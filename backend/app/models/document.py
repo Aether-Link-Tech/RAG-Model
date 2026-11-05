@@ -8,6 +8,7 @@ from backend.app.db.base import Base
 
 if TYPE_CHECKING:
     from backend.app.models.user import User
+    from backend.app.models.collection import Collection
 
 class Document(Base):
     __tablename__ = "documents"
@@ -21,6 +22,12 @@ class Document(Base):
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
+        index=True
+    )
+    collection_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collections.id", ondelete="SET NULL"),
+        nullable=True,
         index=True
     )
     filename: Mapped[str] = mapped_column(
@@ -74,6 +81,10 @@ class Document(Base):
     # Relationships
     owner: Mapped["User"] = relationship(
         "User",
+        back_populates="documents"
+    )
+    collection: Mapped[Optional["Collection"]] = relationship(
+        "Collection",
         back_populates="documents"
     )
 

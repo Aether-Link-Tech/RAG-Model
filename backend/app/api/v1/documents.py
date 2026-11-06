@@ -4,7 +4,6 @@ Protected by Bearer JWT authentication (`CurrentUser`) and PostgreSQL Row-Level
 Security (AL-127 / AL-129) via transaction-local `app.user_id` and `app.user_role`.
 """
 import codecs
-import logging
 import os
 import uuid
 from pathlib import Path
@@ -36,7 +35,6 @@ async def log_security_event(user_id: str, filename: str, reason: str, ip: str):
         pass
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
-logger = logging.getLogger(__name__)
 
 ALLOWED_MIME_TYPES = {
     ".pdf": "application/pdf",
@@ -397,8 +395,6 @@ async def delete_document(
         try:
             restored_document = await db.get(Document, document_id)
             if restored_document is not None:
-                from backend.app.services.document_ingest import index_document
-
                 await index_document(db, restored_document)
         except Exception:
             logger.exception("Could not restore document index after delete failure")

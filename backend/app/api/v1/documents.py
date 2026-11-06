@@ -43,6 +43,21 @@ ALLOWED_MIME_TYPES = {
 }
 
 STREAM_CHUNK_SIZE = 65536
+DANGEROUS_INTERMEDIATE_EXTENSIONS = {
+    ".exe",
+    ".js",
+    ".xml",
+    ".bat",
+    ".cmd",
+    ".vbs",
+    ".ps1",
+    ".scr",
+    ".jar",
+}
+# Archive formats hidden before the final extension (e.g. archive.tar.gz.pdf)
+# are flagged for manual review. Ordinary dotted names (Annual.Report.2024.pdf)
+# are not affected.
+ARCHIVE_INTERMEDIATE_EXTENSIONS = {".tar", ".gz", ".tgz", ".zip", ".7z", ".rar", ".bz2", ".xz"}
 
 
 def _max_size_message() -> str:
@@ -64,6 +79,28 @@ def _resolve_mime(filename: str | None, declared: str | None) -> tuple[str, str]
             detail="Invalid file type. Only PDF, DOCX, and TXT files are allowed.",
         )
     return suffix, ALLOWED_MIME_TYPES[suffix]
+
+
+def _validate_extension_chain(filename: str | None) -> None:
+    """Reject executable/script suffixes hidden before an allowed extension."""
+    safe_name = Path(filename or "").name
+    suffixes = [suffix.lower() for suffix in Path(safe_name).suffixes]
+    if any(suffix in DANGEROUS_INTERMEDIATE_EXTENSIONS for suffix in suffixes[:-1]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Suspicious double extension. Remove the dangerous extension "
+                "before the file type (for example, rename report.xml.pdf)."
+            ),
+        )
+    if any(suffix in ARCHIVE_INTERMEDIATE_EXTENSIONS for suffix in suffixes[:-1]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This filename hides an archive extension before the file type "
+                "and requires manual review before upload."
+            ),
+        )
 
 
 UNIQUE_VIOLATION_SQLSTATE = "23505"
@@ -168,6 +205,12 @@ async def upload_document(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_max_size_message(),
         )
+
+    try:
+        _validate_extension_chain(file.filename)
+    except HTTPException as exc:
+        await log_security_event(user_id_str, filename_str, f"Extension chain validation failed: {exc.detail}", client_ip)
+        raise
 
     try:
         suffix, mime_type = _resolve_mime(file.filename, file.content_type)

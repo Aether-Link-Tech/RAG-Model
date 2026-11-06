@@ -49,6 +49,8 @@ chroma_data/
 uploads/
 backend/uploads/
 backend/users/
+storage/
+quarantine/
 
 # IDE & OS
 .vscode/

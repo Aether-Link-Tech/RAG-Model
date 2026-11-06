@@ -75,8 +75,22 @@ class Settings(BaseConfig):
     # Uploads
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads")
     MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+    CLAMAV_HOST: str = os.getenv("CLAMAV_HOST", "localhost")
+    CLAMAV_PORT: int = int(os.getenv("CLAMAV_PORT", "3310"))
+    CLAMAV_TIMEOUT_SECONDS: int = int(os.getenv("CLAMAV_TIMEOUT_SECONDS", "25"))
+    CLAMAV_QUARANTINE_DIR: str = os.getenv(
+        "CLAMAV_QUARANTINE_DIR", "quarantine"
+    )
     CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "1000"))
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "200"))
+
+    # Parser Sandbox (FR-067 / AL-163 / AL-164)
+    PARSER_SANDBOX_ENABLED: bool = os.getenv("PARSER_SANDBOX_ENABLED", "True").lower() in ("true", "1")
+    PARSER_DOCKER_IMAGE: str = os.getenv("PARSER_DOCKER_IMAGE", "rag-parser-sandbox:latest")
+    PARSER_MEMORY_LIMIT: str = os.getenv("PARSER_MEMORY_LIMIT", "512m")
+    PARSER_CPU_LIMIT: str = os.getenv("PARSER_CPU_LIMIT", "1.0")
+    PARSER_TIMEOUT_SECONDS: int = int(os.getenv("PARSER_TIMEOUT_SECONDS", "60"))
+    PARSER_MAX_OUTPUT_BYTES: int = int(os.getenv("PARSER_MAX_OUTPUT_BYTES", str(10 * 1024 * 1024)))
 
     @property
     def migration_database_url(self) -> str:

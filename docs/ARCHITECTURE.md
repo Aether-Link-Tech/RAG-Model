@@ -168,7 +168,77 @@ flowchart TD
 
 Chunk metadata stored in Chroma: `document_id`, `filename`, `chunk_index`, `user_id` (hex), `visibility`. Chunk IDs: `"{document_id}:{index}"`.
 
-### 4.3 Document status lifecycle
+### 4.3 Sandboxed File Parsing (FR-067 / AL-163 & AL-164)
+
+To prevent remote code execution, server-side request forgery (SSRF), memory corruption, or host filesystem compromises originating from weaponized or malformed uploaded documents, file parsing is strictly isolated inside a dedicated ephemeral Docker container (`rag-parser-sandbox:latest`).
+
+#### Architectural Principles & Isolation Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant I as document_ingest.index_document
+    participant P as document_parser.extract_text
+    participant D as Docker Engine
+    participant C as Ephemeral Sandbox Container (rag-parser-sandbox)
+    participant FS as Host File System (/uploads/:ro)
+
+    I->>P: extract_text(file_path, mime_type, filename)
+    Note over P: Check PARSER_SANDBOX_ENABLED (fail-closed if True)
+    P->>D: docker run [security flags] [resource limits] rag-parser-sandbox /input/file mime_type
+    D->>C: Spawn container (UID 10001, net:none, rootfs:ro, mem:512m, cpu:1.0)
+    C->>FS: Read input file (mounted strictly :ro)
+    C->>C: runner.py: PyPDF2 / python-docx / UTF-8 txt
+    alt Parse Success (<60s)
+        C-->>D: Extracted text to stdout (exit code 0)
+        D-->>P: stdout text
+        P-->>I: return clean text
+    else Parse Timeout (>60s)
+        P->>D: docker rm -f <container_name>
+        P-->>I: raise ParserTimeoutError -> mark document 'failed'
+    else OOM / Memory Limit (>512 MB)
+        C-->>D: Container killed (exit code 137)
+        P->>D: docker rm -f <container_name>
+        P-->>I: raise ParserSandboxError (OOM) -> mark document 'failed'
+    else Corrupt / Exploited File (exit 1)
+        C-->>D: Stderr error snippet (exit code 1)
+        P->>D: docker rm -f <container_name>
+        P-->>I: raise ParserSandboxError -> mark document 'failed'
+    end
+```
+
+#### Security Hardening Specifications (AL-163)
+
+1. **Complete Network Isolation (`--network none`):**
+   - The container has no network interfaces other than loopback (`lo`). Any outbound network access attempts (data exfiltration, reverse shells, SSRF) immediately fail with unreachable network errors.
+2. **Read-Only Root Filesystem (`--read-only`):**
+   - The entire root filesystem is immutable. Malware attempting to write droppers or alter system binaries fails with `Read-only file system` errors.
+   - An ephemeral in-memory tmpfs is provided at `/tmp` (`--tmpfs /tmp:rw,noexec,nosuid,size=64m`) for parsers requiring scratch memory, with execution and setuid disabled.
+3. **Privilege Escalation Prevention:**
+   - `--security-opt no-new-privileges:true`: Prevents processes inside the container from gaining additional privileges via `setuid` or `setgid` binaries.
+   - `--cap-drop ALL`: Strips all Linux kernel capabilities from the container.
+   - `--user 10001:10001`: Container process executes as an unprivileged dedicated non-root user (`sandboxuser`).
+4. **Read-Only Input Volume Mounting (`-v host:container:ro`):**
+   - The host file is mounted directly into `/input/<filename>:ro`. The container cannot modify, truncate, or tamper with the uploaded source file.
+5. **Standardized I/O Communication:**
+   - Extracted text is written directly to standard output (`stdout`). Error diagnostics are written to standard error (`stderr`). Exit code 0 indicates success, 2 indicates unsupported document, and other non-zero codes indicate parser failure.
+
+#### Resource Bounds & Lifecycle Management (AL-164)
+
+1. **Memory Ceiling (`--memory 512m --memory-swap 512m`):**
+   - Strictly confines container memory usage to 512 megabytes. Memory decompression bombs or runaway allocations are immediately terminated by Docker's OOM killer (exit code 137).
+2. **CPU Limit (`--cpus 1.0`):**
+   - Restricts CPU execution to 1 core, preventing malicious documents or infinite regex loops from exhausting host processor resources.
+3. **Process/Fork-Bomb Ceiling (`--pids-limit 64`):**
+   - Restricts the maximum number of simultaneous processes and threads to 64, blocking process table exhaustion.
+4. **Execution Timeout (60 Seconds):**
+   - Subprocess execution is strictly capped at `PARSER_TIMEOUT_SECONDS = 60`. If a document hangs or loops, the Python manager terminates the process and invokes `_kill_and_remove_container` (`docker rm -f`).
+5. **Guaranteed Container Cleanup:**
+   - Containers are invoked with `--rm`. In addition, `_kill_and_remove_container` is explicitly invoked in timeout, error, and process cancellation handlers to guarantee no orphaned or hung containers persist.
+6. **Fail-Closed Security Policy:**
+   - When `PARSER_SANDBOX_ENABLED=True` (production default), failures never silently fall back to in-process execution. If Docker is unavailable or parsing fails, the document is immediately marked as `failed` with an explicit audit log. In-process parsing is permitted exclusively in isolated unit test environments when `PARSER_SANDBOX_ENABLED=False`.
+
+### 4.4 Document status lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -181,7 +251,14 @@ stateDiagram-v2
     note right of failed: retry not implemented (RQ022)
 ```
 
-### 4.4 Retrieval (semantic search)
+### 4.5 Retrieval (semantic search and PostgreSQL RLS-backed chunk authorization - AL-128)
+
+> **Architectural Clarification on AL-128:**
+> The original Jira task AL-128 was titled *"Enable RLS on chunks table"*. In this architecture:
+> - ChromaDB stores document chunks, embeddings, and vector metadata; it is a separate vector store and does **not** have a native PostgreSQL Row-Level Security engine.
+> - PostgreSQL does **not** have a `chunks` table, avoiding redundant data duplication across two databases.
+> - Equivalent secure chunk-level access control is enforced via **PostgreSQL RLS-backed chunk authorization**: ChromaDB retrieves candidate vector hits, and their parent `document_id`s are immediately evaluated against PostgreSQL `documents` under active, transaction-local Row-Level Security (`SET LOCAL ROLE rag_app; app.user_id`).
+> - This guarantees that no private chunk is ever returned to an unauthorized user, achieving the security goal of AL-128 through authoritative PostgreSQL governance rather than a literal RLS policy on ChromaDB.
 
 ```mermaid
 sequenceDiagram
@@ -189,28 +266,54 @@ sequenceDiagram
     participant C as Client
     participant R as POST /api/v1/retrieval/query
     participant O as Ollama
-    participant V as vector_store.query_for_user
-    participant PUB as Chroma public_knowledge
-    participant PRV as Chroma user_{caller}_private
+    participant V as vector_store.query_authorized_chunks
+    participant CH as ChromaDB (Public & Private Collections)
+    participant PG as PostgreSQL (rag_app with app.user_id RLS)
 
-    C->>R: {query, n_results, include_public, include_private}
-    R->>O: embed_query
-    R->>V: user_id = current_user.id (never from the request)
-    opt include_public
-        V->>PUB: query where visibility='public'
-    end
-    opt include_private
-        V->>PRV: open ONLY the caller's collection<br/>(rejected if its stamped owner ≠ caller)
-        V->>PRV: query where user_id=caller AND visibility='private'
-    end
-    V->>V: post-filter every hit again, sort by distance, top-N
+    C->>R: {query, n_results, include_public, include_private} + Bearer JWT
+    Note over R: deps.get_current_user verifies JWT and binds app.user_id on db session
+    R->>O: embed_query(query)
+    R->>V: query_authorized_chunks(db, user_id, query_embedding, ...)
+    V->>CH: query_for_user (public collection + user_{hex}_private collection)
+    CH-->>V: raw candidate chunks (top-K)
+    V->>PG: Batch SELECT id, user_id, visibility, status WHERE id IN (candidate doc_ids)
+    Note over PG: PostgreSQL RLS filters out private documents belonging to other users<br/>and deleted documents automatically
+    PG-->>V: authorized documents set
+    V->>V: authorize_retrieved_chunks: verify status='indexed', visibility & ownership consistency
+    V-->>R: authorized chunks only (stale, foreign, or malformed chunks discarded)
     R->>R: strip internal metadata (user_id)
     R-->>C: results + private_collection_hit
 ```
 
+#### Chunk Retrieval Security Principles (AL-128)
+
+1. **Why Chunks are in ChromaDB instead of PostgreSQL:**
+   - Vector indexing and HNSW cosine similarity search are delegated to ChromaDB, keeping PostgreSQL focused on ACID transactions, relational integrity, and strict access-control governance.
+   - Creating a redundant PostgreSQL `chunks` table is avoided; instead, PostgreSQL document RLS acts as the single source of truth for authorization.
+
+2. **How PostgreSQL Document RLS Protects Chunk Retrieval:**
+   - Every user-facing retrieval request runs within an authenticated PostgreSQL transaction configured with `SET LOCAL ROLE rag_app` and `set_config('app.user_id', <user_id>, true)`.
+   - When candidate chunks are returned by ChromaDB, their `document_id`s are extracted and verified against PostgreSQL in a single batch query (`SELECT ... WHERE id IN (...)`).
+   - PostgreSQL's `documents_select_policy` automatically filters out any private documents not owned by the caller.
+
+3. **Collection Separation & Metadata Filtering:**
+   - Public documents reside in the shared collection (`CHROMA_PUBLIC_COLLECTION`).
+   - Private documents reside in user-isolated collections (`user_{user_id}_private`).
+   - Metadata stamps (`document_id`, `user_id`, `visibility`) are strictly validated; chunks with missing, invalid, or inconsistent metadata are rejected before database validation.
+
+4. **Fail-Closed Authorization:**
+   - If PostgreSQL or ChromaDB encounters connection or operational failures, `DatabaseAuthorizationError` or `VectorStoreError` is raised. The endpoint immediately returns HTTP 503 rather than returning unverified or partial data.
+
+5. **Extending to Future Search and Chat Endpoints:**
+   - Any future RAG pipeline, LLM chat context builder, or citation generator must call `query_authorized_chunks(db=db, user_id=current_user.id, ...)` rather than invoking ChromaDB directly. This guarantees no unauthorized text or citations reach the client or LLM.
+
+6. **Remaining Limitations:**
+   - Deletion from ChromaDB remains best-effort when a document is deleted; however, stale vectors in ChromaDB are guaranteed to be filtered out during retrieval by the PostgreSQL RLS validation step.
+   - Access control is currently scoped to the document level (a user either has access to all chunks of an authorized document or none).
+
 There's no BM25, hybrid fusion, re-ranking, threshold or LLM answer yet (RQ024–RQ033).
 
-### 4.5 Delete a document, delete an account
+### 4.6 Delete a document, delete an account
 
 ```mermaid
 flowchart TD

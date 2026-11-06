@@ -1,4 +1,7 @@
 import hashlib
+import os
+import shutil
+import subprocess
 import uuid
 import pytest
 import pytest_asyncio
@@ -54,6 +57,34 @@ async def purge_test_users(*user_ids: uuid.UUID) -> None:
         await cleanup_session.commit()
 
 
+def _docker_engine_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        return subprocess.run(["docker", "info"], capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+_DOCKER_AVAILABLE = _docker_engine_available()
+# Modules that exercise the Docker sandbox themselves and must keep the real setting.
+_SANDBOX_TEST_MODULES = ("test_sandboxed_parser", "test_al165_malicious_files")
+
+
+@pytest.fixture(autouse=True)
+def parser_sandbox_mode(request, monkeypatch):
+    """Keep the suite runnable on machines without Docker (FR-067).
+
+    In CI, or wherever a Docker engine is running, every upload is parsed in the
+    real sandbox. On a laptop without Docker, non-sandbox tests fall back to
+    in-process parsing instead of failing closed; sandbox tests keep their own setup.
+    """
+    if request.module.__name__.rsplit(".", 1)[-1] in _SANDBOX_TEST_MODULES:
+        return
+    if not _DOCKER_AVAILABLE and not os.getenv("CI"):
+        monkeypatch.setattr(settings, "PARSER_SANDBOX_ENABLED", False)
+
+
 @pytest.fixture(autouse=True)
 def isolate_storage(tmp_path, monkeypatch):
     """Isolate file storage per test using a temporary directory."""
@@ -81,6 +112,19 @@ def stub_rag_indexing(monkeypatch):
         users_api,
         "delete_user_private_knowledge",
         _noop_delete_user_private_knowledge,
+    )
+
+
+@pytest.fixture(autouse=True)
+def stub_clamav_scan(request, monkeypatch):
+    """Keep normal upload tests independent of the ClamAV daemon."""
+    if request.node.get_closest_marker("clamav_scan"):
+        return
+    monkeypatch.setattr(
+        documents_api,
+        "scan_and_quarantine",
+        lambda *args, **kwargs: None,
+        raising=False,
     )
 
 

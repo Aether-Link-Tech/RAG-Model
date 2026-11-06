@@ -4,12 +4,12 @@ Protected by Bearer JWT authentication (`CurrentUser`) and PostgreSQL Row-Level
 Security (AL-127 / AL-129) via transaction-local `app.user_id` and `app.user_role`.
 """
 import codecs
+import ctypes.util
 import logging
 import os
 import uuid
 import zipfile
 from pathlib import Path
-import logging
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Request, status
 from sqlalchemy import or_, select
@@ -37,7 +37,25 @@ async def log_security_event(user_id: str, filename: str, reason: str, ip: str):
         pass
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
-logger = logging.getLogger(__name__)
+
+
+def _load_python_magic():
+    """Return the python-magic module only when the libmagic library is installed.
+
+    On hosts without libmagic (e.g. Windows dev machines) `import magic` can hang
+    while searching for the DLL, so it is never imported there; validation then
+    uses the explicit signature checks below.
+    """
+    if ctypes.util.find_library("magic") is None:
+        return None
+    try:
+        import magic  # type: ignore[import-not-found]
+    except Exception:  # pragma: no cover - environment dependent
+        return None
+    return magic
+
+
+_MAGIC = _load_python_magic()
 
 ALLOWED_MIME_TYPES = {
     ".pdf": "application/pdf",
@@ -103,9 +121,9 @@ async def _validate_file_magic_bytes(file: UploadFile, suffix: str) -> None:
 
     expected_mime = ALLOWED_MIME_TYPES[suffix]
     try:
-        import magic
-
-        detected_mime = magic.from_buffer(header, mime=True)
+        if _MAGIC is None:
+            raise RuntimeError("libmagic not available")
+        detected_mime = _MAGIC.from_buffer(header, mime=True)
     except Exception:
         # Keep validation available in developer environments without libmagic;
         # production installs use python-magic for fuller signature detection.

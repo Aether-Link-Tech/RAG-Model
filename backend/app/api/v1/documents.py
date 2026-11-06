@@ -54,6 +54,10 @@ DANGEROUS_INTERMEDIATE_EXTENSIONS = {
     ".scr",
     ".jar",
 }
+# Archive formats hidden before the final extension (e.g. archive.tar.gz.pdf)
+# are flagged for manual review. Ordinary dotted names (Annual.Report.2024.pdf)
+# are not affected.
+ARCHIVE_INTERMEDIATE_EXTENSIONS = {".tar", ".gz", ".tgz", ".zip", ".7z", ".rar", ".bz2", ".xz"}
 
 
 def _max_size_message() -> str:
@@ -87,6 +91,14 @@ def _validate_extension_chain(filename: str | None) -> None:
             detail=(
                 "Suspicious double extension. Remove the dangerous extension "
                 "before the file type (for example, rename report.xml.pdf)."
+            ),
+        )
+    if any(suffix in ARCHIVE_INTERMEDIATE_EXTENSIONS for suffix in suffixes[:-1]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This filename hides an archive extension before the file type "
+                "and requires manual review before upload."
             ),
         )
 

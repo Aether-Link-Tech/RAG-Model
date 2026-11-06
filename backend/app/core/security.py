@@ -8,7 +8,7 @@ import uuid
 import jwt
 from jwt import PyJWTError
 
-from app.core.config import settings
+from backend.app.core.config import settings
 
 
 class TokenValidationError(ValueError):

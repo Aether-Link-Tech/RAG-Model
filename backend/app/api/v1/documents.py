@@ -5,9 +5,11 @@ Security (AL-127 / AL-129) via transaction-local `app.user_id` and `app.user_rol
 """
 import asyncio
 import codecs
+import ctypes.util
 import logging
 import os
 import uuid
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
@@ -41,6 +43,25 @@ async def log_security_event(user_id: str, filename: str, reason: str, ip: str):
         pass
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
+
+
+def _load_python_magic():
+    """Return the python-magic module only when the libmagic library is installed.
+
+    On hosts without libmagic (e.g. Windows dev machines) `import magic` can hang
+    while searching for the DLL, so it is never imported there; validation then
+    uses the explicit signature checks below.
+    """
+    if ctypes.util.find_library("magic") is None:
+        return None
+    try:
+        import magic  # type: ignore[import-not-found]
+    except Exception:  # pragma: no cover - environment dependent
+        return None
+    return magic
+
+
+_MAGIC = _load_python_magic()
 
 ALLOWED_MIME_TYPES = {
     ".pdf": "application/pdf",
@@ -104,29 +125,65 @@ async def _validate_file_magic_bytes(file: UploadFile, suffix: str) -> None:
             detail="Uploaded file is empty (0 bytes).",
         )
 
-    if suffix == ".pdf" and not header.startswith(b"%PDF-"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File content signature does not match a valid PDF.",
-        )
-    if suffix == ".docx" and not header.startswith(b"PK\x03\x04"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File content signature does not match a valid DOCX document.",
-        )
+    expected_mime = ALLOWED_MIME_TYPES[suffix]
+    try:
+        if _MAGIC is None:
+            raise RuntimeError("libmagic not available")
+        detected_mime = _MAGIC.from_buffer(header, mime=True)
+    except Exception:
+        # Keep validation available in developer environments without libmagic;
+        # production installs use python-magic for fuller signature detection.
+        if header.startswith(b"%PDF-"):
+            detected_mime = "application/pdf"
+        elif header.startswith(b"PK\x03\x04"):
+            detected_mime = "application/zip"
+        elif b"\x00" in header:
+            detected_mime = "application/octet-stream"
+        else:
+            try:
+                header.decode("utf-8")
+                detected_mime = "text/plain"
+            except UnicodeDecodeError:
+                detected_mime = "application/octet-stream"
+
+    if suffix == ".docx":
+        try:
+            await file.seek(0)
+            with zipfile.ZipFile(file.file) as archive:
+                entries = set(archive.namelist())
+            is_docx = "[Content_Types].xml" in entries and "word/document.xml" in entries
+        except (OSError, zipfile.BadZipFile):
+            is_docx = False
+        finally:
+            await file.seek(0)
+        if detected_mime in {"application/zip", expected_mime} and is_docx:
+            detected_mime = expected_mime
+
     if suffix == ".txt":
         if b"\x00" in header:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="File content is not valid UTF-8 plain text.",
-            )
+            detected_mime = "application/octet-stream"
         try:
             codecs.getincrementaldecoder("utf-8")().decode(header, final=False)
-        except UnicodeDecodeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="File content is not valid UTF-8 plain text.",
-            ) from exc
+        except UnicodeDecodeError:
+            detected_mime = "application/octet-stream"
+        if detected_mime.startswith("text/"):
+            detected_mime = expected_mime
+
+    if detected_mime != expected_mime:
+        logger.warning(
+            "Rejected uploaded file with MIME mismatch: filename=%r extension=%s detected=%s expected=%s",
+            file.filename,
+            suffix,
+            detected_mime,
+            expected_mime,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"File content does not match the .{suffix.lstrip('.')} extension. "
+                "Choose the correct file type and upload again."
+            ),
+        )
 
 
 def _best_effort_remove(path: str | None) -> None:

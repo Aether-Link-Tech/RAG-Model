@@ -379,6 +379,38 @@ def delete_document_chunks(
     collection.delete(where=where)
 
 
+def rename_document_chunks(
+    *,
+    user_id: uuid.UUID | str,
+    document_id: uuid.UUID | str,
+    filename: str,
+    visibility: Visibility = "private",
+) -> None:
+    """Keep Chroma citation metadata in sync when a document is renamed."""
+    where = {
+        "$and": [
+            _owner_filter(user_id),
+            {"document_id": {"$eq": str(document_id)}},
+        ]
+    }
+    if visibility == "private":
+        collection = get_private_collection(user_id)
+        if collection is None:
+            return
+    else:
+        collection = get_public_collection()
+
+    stored = collection.get(where=where, include=["metadatas"])
+    ids = stored.get("ids") or []
+    metadatas = stored.get("metadatas") or []
+    if not ids:
+        return
+    collection.update(
+        ids=ids,
+        metadatas=[{**(metadata or {}), "filename": filename} for metadata in metadatas],
+    )
+
+
 def delete_user_private_knowledge(user_id: uuid.UUID | str) -> bool:
     """Delete a user's private collection only. Public chunks stay indexed."""
     return delete_private_collection(user_id)

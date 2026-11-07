@@ -13,6 +13,7 @@ import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
@@ -482,6 +483,37 @@ async def get_document(
 ) -> DocumentResponse:
     return _to_response(
         await _accessible_document(db, current_user.id, document_id), current_user.id
+    )
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    document_id: uuid.UUID,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> FileResponse:
+    """Download an accessible document file (AL-182).
+
+    Own documents and public documents only; another user's private document
+    is 404 (same rule as GET /documents/{id}). The stored path is never exposed.
+    """
+    document = await _accessible_document(db, current_user.id, document_id)
+
+    upload_root = Path(settings.UPLOAD_DIR).resolve()
+    stored_path = Path(document.file_path or "").resolve()
+    if not stored_path.is_relative_to(upload_root) or not stored_path.is_file():
+        # Missing file, or a stored path outside the upload area: never serve it.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found on storage server.",
+        )
+
+    logger.info("Document %s downloaded by user %s", document.id, current_user.id)
+
+    return FileResponse(
+        path=stored_path,
+        filename=document.filename,
+        media_type=document.mime_type,
     )
 
 

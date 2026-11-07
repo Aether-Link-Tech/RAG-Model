@@ -495,7 +495,7 @@ async def test_validation_rejects_empty_unsupported_and_spoofed_files(
         files={"file": ("fake.pdf", io.BytesIO(b"Not a real PDF header"), "application/pdf")},
     )
     assert r_spoof.status_code == 400
-    assert "signature" in r_spoof.json()["detail"].lower()
+    assert "does not match" in r_spoof.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

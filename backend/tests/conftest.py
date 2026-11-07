@@ -8,12 +8,30 @@ import pytest_asyncio
 import httpx
 from typing import AsyncGenerator
 from sqlalchemy import delete
+from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+# Route test suite to rag_db_test so tests never touch development/production rag_db
+_default_db = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/rag_db")
+if "rag_db" in _default_db and not _default_db.endswith("rag_db_test"):
+    _test_db_url = make_url(_default_db).set(database="rag_db_test").render_as_string(hide_password=False)
+    os.environ["DATABASE_URL"] = _test_db_url
+    if os.getenv("MIGRATION_DATABASE_URL"):
+        os.environ["MIGRATION_DATABASE_URL"] = make_url(os.environ["MIGRATION_DATABASE_URL"]).set(database="rag_db_test").render_as_string(hide_password=False)
+    if os.getenv("APP_DATABASE_URL"):
+        os.environ["APP_DATABASE_URL"] = make_url(os.environ["APP_DATABASE_URL"]).set(database="rag_db_test").render_as_string(hide_password=False)
 
 from backend.app.api.v1 import documents as documents_api
 from backend.app.api.v1 import users as users_api
 from backend.app.core.config import settings
+
+if "rag_db" in settings.DATABASE_URL and not settings.DATABASE_URL.endswith("rag_db_test"):
+    settings.DATABASE_URL = make_url(settings.DATABASE_URL).set(database="rag_db_test").render_as_string(hide_password=False)
+if settings.MIGRATION_DATABASE_URL and not settings.MIGRATION_DATABASE_URL.endswith("rag_db_test"):
+    settings.MIGRATION_DATABASE_URL = make_url(settings.MIGRATION_DATABASE_URL).set(database="rag_db_test").render_as_string(hide_password=False)
+if settings.APP_DATABASE_URL and not settings.APP_DATABASE_URL.endswith("rag_db_test"):
+    settings.APP_DATABASE_URL = make_url(settings.APP_DATABASE_URL).set(database="rag_db_test").render_as_string(hide_password=False)
 from backend.app.db.rls import clear_rls_context, configure_rls_context
 from backend.app.db.session import get_db
 from backend.app.main import app

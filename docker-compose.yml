@@ -44,7 +44,27 @@ services:
       - PERSIST_DIRECTORY=/chroma/chroma
       - ANONYMIZED_TELEMETRY=FALSE
 
+  parser-sandbox:
+    build:
+      context: docker/parser
+      dockerfile: Dockerfile
+    image: rag-parser-sandbox:latest
+    profiles:
+      - parser-build
+
+  clamav:
+    image: clamav/clamav:1.4
+    container_name: rag_clamav
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3310:3310"
+    volumes:
+      - clamav_data:/var/lib/clamav
+    environment:
+      - CLAMD_CONF_StreamMaxLength=30M
+
 volumes:
   postgres_data:
   redis_data:
   chroma_data:
+  clamav_data:

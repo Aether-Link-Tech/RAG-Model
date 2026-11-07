@@ -1,0 +1,52 @@
+# CLAUDE.md
+
+Secure AI-powered document intelligence + context-aware RAG system (team Aether-Link, Jira project `AL`).
+FastAPI backend, PostgreSQL 17, ChromaDB, Redis/Celery, Ollama (local LLM + embeddings), React/Vite frontend.
+
+## Layout
+- `backend/app/api/v1/` — routes: `documents.py` (upload/list/get/delete), `retrieval.py`, `users.py`
+- `backend/app/api/deps.py` — `CurrentUser` / `DbSession` dependencies
+- `backend/app/db/chroma.py` — Chroma client + public / per-user private collections
+- `backend/app/services/` — `vector_store.py` (owner-scoped search), `document_ingest.py`, `chunking.py`, `embedding.py` (Ollama), `hash_service.py`
+- `backend/app/models/` — SQLAlchemy models; migrations in `backend/alembic/versions/`
+- `backend/tests/` — pytest suite; shared fixtures in `conftest.py`
+- `frontend/` — Vite + React + TS (`npm run dev` → port 3000)
+
+## Commands
+Python env: conda env **`rag-model`** (Python 3.11). Don't create ad-hoc venvs; add new deps to `backend/requirements.txt`.
+
+```bash
+docker compose up -d                                   # postgres:5432, redis:6379, chroma:8001
+conda run -n rag-model alembic -c backend/alembic.ini upgrade head
+conda run -n rag-model uvicorn backend.app.main:app --reload --port 8000
+cd backend && conda run -n rag-model python -m pytest tests -q
+```
+
+Tests need PostgreSQL at `DATABASE_URL` (default `postgres:postgres@localhost:5432/rag_db`, migrated to head).
+Chroma and Ollama are faked in tests via the `chroma_client` (in-memory) and `fake_embeddings` fixtures.
+DB-backed isolation tests skip locally if Postgres is down, but fail in CI (`CI=true`).
+CI: `.github/workflows/backend-tests.yml` runs the suite on PRs/pushes to `develop` and `main`.
+
+## Git workflow
+- Branch from **`develop`**; PR into **`develop`**, never directly into `main`.
+- The lead (Muhammad Ayyan) reviews and tests, then merges `develop` → `main`.
+- Branch naming for the team: `feature/fr-XXX-short-name`. The lead works on `muhammad-ayyan`.
+- Commit style: Conventional Commits, e.g. `feat(privacy): ...`, `fix(documents): ...`, `chore(tests): ...`.
+- Never commit uploaded user files, `.env`, `uploads/`, or `chroma_data/`.
+
+## Security / isolation rules (do not break)
+- Every document query is scoped to the current user (`Document.user_id == current_user.id`); cross-user access returns **404**, not 403, so existence isn't leaked.
+- Private vectors live only in `user_{user_id}_private` (template `CHROMA_PRIVATE_COLLECTION_TEMPLATE`); public in `CHROMA_PUBLIC_COLLECTION`.
+- Every private Chroma read uses `private_owner_filter()` (user_id AND visibility='private'). Never open another user's private collection.
+- Chunk retrieval authorization (AL-128): All retrieval endpoints and RAG workflows must use `query_authorized_chunks(db, user_id, ...)`. This implements PostgreSQL RLS-backed chunk authorization (validating candidate ChromaDB chunks against PostgreSQL document RLS in batch, rather than a literal RLS policy on ChromaDB). Stale, foreign, deleted, or metadata-inconsistent chunks are discarded before returning results or LLM context.
+- API responses must not expose internal ownership metadata (`user_id` in chunk metadata) or raw exception text.
+- Document responses show `user_id` only for the caller's own documents (`is_owner`); other users' public docs return `user_id: null`.
+- Duplicate detection is SHA-256, scoped: per-user for private, global for public (partial unique indexes).
+- Sandboxed File Parsing (FR-067 / AL-163 & AL-164): Untrusted file extraction (PDF, DOCX, TXT) runs inside an isolated Docker container (`rag-parser-sandbox:latest`) with `--network none`, `--read-only` rootfs, unprivileged user `10001:10001`, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, resource limits (512 MB RAM, 1 CPU, 64 PIDs), and a 60-second timeout. Container is explicitly cleaned up via `docker rm -f` on success, timeout, failure, or cancellation. NEVER silently fall back to in-process parsing in production; if Docker fails or is unavailable, fail closed and mark the document as `failed`. In-process parsing is permitted only in test environments when `PARSER_SANDBOX_ENABLED=False`. Build container with `docker build -t rag-parser-sandbox:latest docker/parser` or `docker compose --profile parser-build build parser-sandbox`.
+- Auth: Bearer JWT (`POST /api/v1/auth/login`). The app connects as the non-superuser `rag_app` role; PostgreSQL RLS on `documents` uses transaction-local `app.user_id` / `app.user_role` (`backend/app/db/rls.py`).
+- Every new table's migration must `GRANT` privileges to `rag_app` and add RLS policies, or requests fail with "permission denied".
+- Tests authenticate with `create_access_token(user.id, role=user.role)`; hard user deletes in teardown use the migration (superuser) URL.
+
+## Jira
+REST API with user env vars `JIRA_EMAIL` / `JIRA_TOKEN`; site `https://final-team-ho4yb920.atlassian.net`, project `AL`.
+Hierarchy: Epic → Story (FR-XXX) → Subtask. Show proposed Jira changes before applying them.

@@ -27,8 +27,16 @@ def _normalize_user_id(user_id: uuid.UUID | str) -> str:
 
 
 def private_collection_name(user_id: uuid.UUID | str) -> str:
-    """Stable, Chroma-safe name for a user's private collection."""
-    return f"{settings.CHROMA_PRIVATE_COLLECTION_PREFIX}{_normalize_user_id(user_id)}"
+    """Stable, Chroma-safe name for a user's private collection: user_{user_id}_private."""
+    return settings.CHROMA_PRIVATE_COLLECTION_TEMPLATE.format(
+        user_id=_normalize_user_id(user_id)
+    )
+
+
+def _is_owned_by(collection: Any, owner: str) -> bool:
+    """A private collection is usable only if its stamped owner matches the caller."""
+    metadata = getattr(collection, "metadata", None) or {}
+    return metadata.get("visibility") == "private" and metadata.get("user_id") == owner
 
 
 @lru_cache(maxsize=1)
@@ -47,10 +55,14 @@ def get_public_collection() -> Any:
     )
 
 
+class PrivateCollectionOwnershipError(PermissionError):
+    """Raised when a private collection's stamped owner does not match the caller."""
+
+
 def get_or_create_private_collection(user_id: uuid.UUID | str) -> Any:
     """Return the caller's private collection, creating it on first use."""
     owner = _normalize_user_id(user_id)
-    return get_chroma_client().get_or_create_collection(
+    collection = get_chroma_client().get_or_create_collection(
         name=private_collection_name(user_id),
         metadata={
             "hnsw:space": "cosine",
@@ -58,14 +70,26 @@ def get_or_create_private_collection(user_id: uuid.UUID | str) -> Any:
             "user_id": owner,
         },
     )
+    if not _is_owned_by(collection, owner):
+        raise PrivateCollectionOwnershipError(
+            "Private collection owner does not match the requesting user"
+        )
+    return collection
 
 
 def get_private_collection(user_id: uuid.UUID | str) -> Optional[Any]:
-    """Return an existing private collection, or None if the user has none."""
+    """Return the caller's existing private collection, or None.
+
+    Returns None when the collection is missing or when its stamped owner does
+    not match, so a mis-stamped collection is never read on another user's behalf.
+    """
     try:
-        return get_chroma_client().get_collection(name=private_collection_name(user_id))
+        collection = get_chroma_client().get_collection(name=private_collection_name(user_id))
     except Exception:
         return None
+    if not _is_owned_by(collection, _normalize_user_id(user_id)):
+        return None
+    return collection
 
 
 def delete_private_collection(user_id: uuid.UUID | str) -> bool:

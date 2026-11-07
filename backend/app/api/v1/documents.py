@@ -35,17 +35,24 @@ from backend.app.services.hash_service import (
     FileSizeLimitExceededError,
     compute_sha256_and_size_stream,
 )
+from backend.app.services.security_audit import record_security_event
 from backend.app.services.vector_store import delete_document_chunks, rename_document_chunks
 
 logger = logging.getLogger(__name__)
 
-async def log_security_event(user_id: str, filename: str, reason: str, ip: str):
+async def log_security_event(
+    user_id: uuid.UUID | str | None,
+    filename: str | None,
+    reason: str,
+    ip: str | None,
+) -> None:
     """Non-blocking security audit logger. Never raises exceptions."""
     try:
         log_msg = f"[SECURITY AUDIT] User: {user_id} | File: {filename} | Reason: {reason} | IP: {ip}"
         logger.warning(log_msg)
     except Exception:
         pass
+    await record_security_event(user_id=user_id, filename=filename, reason=reason, ip=ip)
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -212,13 +219,6 @@ async def _validate_file_magic_bytes(file: UploadFile, suffix: str) -> None:
             detected_mime = expected_mime
 
     if detected_mime != expected_mime:
-        logger.warning(
-            "Rejected uploaded file with MIME mismatch: filename=%r extension=%s detected=%s expected=%s",
-            file.filename,
-            suffix,
-            detected_mime,
-            expected_mime,
-        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -488,6 +488,7 @@ async def get_document(
 
 @router.get("/{document_id}/download")
 async def download_document(
+    request: Request,
     document_id: uuid.UUID,
     db: DbSession,
     current_user: CurrentUser,
@@ -501,8 +502,20 @@ async def download_document(
 
     upload_root = Path(settings.UPLOAD_DIR).resolve()
     stored_path = Path(document.file_path or "").resolve()
-    if not stored_path.is_relative_to(upload_root) or not stored_path.is_file():
-        # Missing file, or a stored path outside the upload area: never serve it.
+    if not stored_path.is_relative_to(upload_root):
+        client_ip = request.client.host if request.client else "unknown"
+        await log_security_event(
+            str(current_user.id),
+            document.filename,
+            "Path traversal attempt blocked",
+            client_ip,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found on storage server.",
+        )
+    if not stored_path.is_file():
+        # Missing file on disk: never serve it.
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found on storage server.",
@@ -536,15 +549,36 @@ async def update_document(
     Only the owner may update. Another user's private document -> 404 (never
     revealed); another user's public document -> 403.
     """
-    document = await _accessible_document(db, current_user.id, document_id)
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        document = await _accessible_document(db, current_user.id, document_id)
+    except HTTPException as exc:
+        await log_security_event(
+            str(current_user.id),
+            filename or (file.filename if file else None) or str(document_id),
+            f"Unauthorized document update attempt: {exc.detail}",
+            client_ip,
+        )
+        raise
     if document.user_id != current_user.id:
         if document.visibility == "private":
+            await log_security_event(
+                str(current_user.id),
+                document.filename,
+                "Unauthorized private document update attempt",
+                client_ip,
+            )
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        await log_security_event(
+            str(current_user.id),
+            document.filename,
+            "Unauthorized public document update attempt",
+            client_ip,
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the owner can update this document.",
         )
-    client_ip = request.client.host if request.client else "unknown"
     # Captured up front: after a rollback ORM attributes expire and must not be
     # lazy-loaded inside the async error handlers.
     actor_id = current_user.id
@@ -606,11 +640,23 @@ async def update_document(
             max_bytes=settings.MAX_UPLOAD_BYTES,
         )
     except FileSizeLimitExceededError as exc:
+        await log_security_event(
+            str(current_user.id),
+            replacement_name,
+            "File size limit exceeded during stream",
+            client_ip,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_max_size_message(),
         ) from exc
     if file_size == 0:
+        await log_security_event(
+            str(current_user.id),
+            replacement_name,
+            "Uploaded file is empty (0 bytes)",
+            client_ip,
+        )
         raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes).")
 
     duplicate_query = select(Document.id).where(
@@ -622,6 +668,12 @@ async def update_document(
         duplicate_query = duplicate_query.where(Document.user_id == current_user.id)
     existing = await db.execute(duplicate_query)
     if existing.scalar_one_or_none() is not None:
+        await log_security_event(
+            str(current_user.id),
+            replacement_name,
+            f"Duplicate {document.visibility} document conflict",
+            client_ip,
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=_duplicate_conflict_detail(
@@ -662,19 +714,51 @@ async def update_document(
         _best_effort_remove(str(temporary_path))
         _best_effort_remove(str(replacement_path))
         await _safe_rollback(db)
+        await log_security_event(
+            str(actor_id),
+            replacement_name,
+            "File size limit exceeded during disk write",
+            client_ip,
+        )
         raise HTTPException(400, detail=_max_size_message()) from exc
     except IntegrityError as exc:
         _best_effort_remove(str(temporary_path))
         _best_effort_remove(str(replacement_path))
         await _safe_rollback(db)
         if _is_duplicate_conflict(exc):
+            await log_security_event(
+                str(actor_id),
+                replacement_name,
+                "Database unique constraint duplicate conflict",
+                client_ip,
+            )
             raise HTTPException(
                 status_code=409,
                 detail=_duplicate_conflict_detail(
                     visibility
                 ),
             ) from exc
+        await log_security_event(
+            str(actor_id),
+            replacement_name,
+            "Database integrity constraint violation",
+            client_ip,
+        )
         raise
+    except OSError as exc:
+        _best_effort_remove(str(temporary_path))
+        _best_effort_remove(str(replacement_path))
+        await _safe_rollback(db)
+        await log_security_event(
+            str(actor_id),
+            replacement_name,
+            "Filesystem storage error",
+            client_ip,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to persist uploaded document to storage.",
+        ) from exc
     except InfectedFileError as exc:
         _best_effort_remove(str(temporary_path))
         await _safe_rollback(db)
@@ -722,18 +806,41 @@ async def update_document(
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
+    request: Request,
     document_id: uuid.UUID,
     db: DbSession,
     current_user: CurrentUser,
 ) -> None:
-    document = await _accessible_document(db, current_user.id, document_id)
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        document = await _accessible_document(db, current_user.id, document_id)
+    except HTTPException as exc:
+        await log_security_event(
+            str(current_user.id),
+            str(document_id),
+            f"Unauthorized document delete attempt: {exc.detail}",
+            client_ip,
+        )
+        raise
     if document.visibility == "private" and document.user_id != current_user.id:
+        await log_security_event(
+            str(current_user.id),
+            document.filename,
+            "Unauthorized private document delete attempt",
+            client_ip,
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     if (
         document.visibility == "public"
         and document.user_id != current_user.id
         and current_user.role != "admin"
     ):
+        await log_security_event(
+            str(current_user.id),
+            document.filename,
+            "Unauthorized public document delete attempt",
+            client_ip,
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the original uploader or an admin can delete a public document.",

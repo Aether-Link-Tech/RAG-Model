@@ -3,6 +3,7 @@
 Protected by Bearer JWT authentication (`CurrentUser`) and PostgreSQL Row-Level
 Security (AL-127 / AL-129) via transaction-local `app.user_id` and `app.user_role`.
 """
+import asyncio
 import codecs
 import ctypes.util
 import logging
@@ -11,7 +12,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Request, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
@@ -20,6 +21,11 @@ from backend.app.core.config import settings
 from backend.app.models.document import Document
 from backend.app.schemas.document import DocumentResponse, Visibility
 from backend.app.services.document_ingest import build_storage_path, index_document
+from backend.app.services.clamav import (
+    ClamAVUnavailableError,
+    InfectedFileError,
+    scan_and_quarantine,
+)
 from backend.app.services.hash_service import (
     FileSizeLimitExceededError,
     compute_sha256_and_size_stream,
@@ -339,6 +345,30 @@ async def upload_document(
                 buffer.write(chunk)
             buffer.flush()
 
+        try:
+            await asyncio.to_thread(
+                scan_and_quarantine,
+                tmp_path,
+                current_user.id,
+                document_id,
+            )
+        except InfectedFileError as exc:
+            client_ip = request.client.host if request.client else "unknown"
+            await log_security_event(
+                user_id_str,
+                filename_str,
+                f"Malware detected: {exc.signature}",
+                client_ip,
+            )
+            logger.warning(
+                "Quarantined infected upload: user_id=%s ip=%s filename=%r signature=%s",
+                current_user.id,
+                client_ip,
+                safe_filename,
+                exc.signature,
+            )
+            raise
+
         os.replace(tmp_path, file_path)
 
         document = Document(
@@ -390,6 +420,20 @@ async def upload_document(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to persist uploaded document to storage.",
+        ) from exc
+    except InfectedFileError as exc:
+        _best_effort_remove(tmp_path)
+        await _safe_rollback(db)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Malware was detected. The file was quarantined and the upload was blocked.",
+        ) from exc
+    except ClamAVUnavailableError as exc:
+        _best_effort_remove(tmp_path)
+        await _safe_rollback(db)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Malware scanning is temporarily unavailable. Please retry the upload.",
         ) from exc
     except BaseException:
         if not committed:
@@ -457,15 +501,58 @@ async def delete_document(
         )
 
     visibility = "public" if document.visibility == "public" else "private"
-    delete_document_chunks(
-        user_id=document.user_id,
-        document_id=document.id,
-        visibility=visibility,
+    document_id = document.id
+    original_path = Path(document.file_path)
+    staged_path = original_path.with_name(
+        f".{original_path.name}.{uuid.uuid4().hex}.deleting"
     )
-    if os.path.exists(document.file_path):
-        os.remove(document.file_path)
-    await db.delete(document)
-    await db.commit()
+    staged_file = False
+
+    # Move the file aside first so a failed database delete can restore it.
+    if original_path.exists():
+        try:
+            os.replace(original_path, staged_path)
+            staged_file = True
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Document file could not be staged for deletion.",
+            ) from exc
+
+    try:
+        # ChromaDB is outside the PostgreSQL transaction. Repair its index if
+        # the SQL delete fails after vector cleanup succeeds.
+        delete_document_chunks(
+            user_id=document.user_id,
+            document_id=document_id,
+            visibility=visibility,
+        )
+        await db.delete(document)
+        await db.commit()
+    except Exception as exc:
+        await _safe_rollback(db)
+        if staged_file and staged_path.exists():
+            try:
+                os.replace(staged_path, original_path)
+            except OSError:
+                logger.exception("Could not restore document file after delete failure")
+        try:
+            restored_document = await db.get(Document, document_id)
+            if restored_document is not None:
+                await index_document(db, restored_document)
+        except Exception:
+            logger.exception("Could not restore document index after delete failure")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document deletion could not be completed. Please retry.",
+        ) from exc
+
+    if staged_file:
+        try:
+            staged_path.unlink()
+        except OSError:
+            # Keep the tombstone name so it cannot be mistaken for a live upload.
+            logger.exception("Document was deleted but its staged file could not be removed")
 
 
 async def _accessible_document(

@@ -75,6 +75,12 @@ class Settings(BaseConfig):
     # Uploads
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads")
     MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+    CLAMAV_HOST: str = os.getenv("CLAMAV_HOST", "localhost")
+    CLAMAV_PORT: int = int(os.getenv("CLAMAV_PORT", "3310"))
+    CLAMAV_TIMEOUT_SECONDS: int = int(os.getenv("CLAMAV_TIMEOUT_SECONDS", "25"))
+    CLAMAV_QUARANTINE_DIR: str = os.getenv(
+        "CLAMAV_QUARANTINE_DIR", "quarantine"
+    )
     CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "1000"))
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "200"))
 

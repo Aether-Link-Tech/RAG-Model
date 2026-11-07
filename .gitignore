@@ -50,6 +50,8 @@ uploads/
 backend/uploads/
 backend/users/
 storage/
+quarantine/
+
 # IDE & OS
 .vscode/
 .idea/

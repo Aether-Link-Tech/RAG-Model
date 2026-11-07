@@ -1,11 +1,17 @@
-import React from 'react';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import AuthLayout from './layouts/AuthLayout';
+import SignupPage from './pages/signup';
 
 export default function App() {
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-      <h1 className="text-4xl md:text-5xl font-bold tracking-tight">
-        Welcome to RAG Model
-      </h1>
-    </div>
+    <BrowserRouter>
+      <Routes>
+        <Route element={<AuthLayout />}>
+          <Route path="/signup" element={<SignupPage />} />
+        </Route>
+
+        <Route path="*" element={<Navigate to="/signup" replace />} />
+      </Routes>
+    </BrowserRouter>
   );
 }

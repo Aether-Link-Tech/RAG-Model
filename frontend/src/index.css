@@ -1,45 +1,75 @@
+/* Global styles */
 @import "tailwindcss";
+@import "./styles/animations.css";
+@import "./styles/components.css";
+@import "./styles/auth.css";
+
+/* Design tokens — change a color here and it updates everywhere */
+:root {
+  --navy: #061a3b;
+  --navy-2: #0a2347;
+  --navy-line: #17375e;
+  --blue: #1677ff;
+  --blue-dark: #0756d8;
+  --cyan: #43c7ff;
+  --green: #22b07d;
+  --red: #d93445;
+  --amber: #b7791f;
+  --line: #dce5f0;
+  --muted: #64748b;
+  --text: #12213a;
+  --page: #f4f7fb;
+
+  --font-body: "DM Sans", system-ui, sans-serif;
+  --font-display: "Manrope", system-ui, sans-serif;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  color: var(--text);
+  font-family: var(--font-body);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
 
 @layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #c8d5e5 transparent;
+  }
+
   body {
-    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    background-color: #030712;
-    color: #f8fafc;
+    min-width: 320px;
+    min-height: 100vh;
+    background: var(--page);
   }
-  
-  code, pre {
-    font-family: 'JetBrains Mono', monospace;
+
+  button {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--cyan);
+    outline-offset: 2px;
   }
 }
 
-/* Custom glow animations */
-@keyframes pulse-subtle {
-  0%, 100% {
-    opacity: 0.35;
-    transform: scale(1);
+/* Respect users who turn off animations in their OS settings */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
-  50% {
-    opacity: 0.65;
-    transform: scale(1.05);
-  }
-}
-
-.animate-pulse-subtle {
-  animation: pulse-subtle 6s ease-in-out infinite;
-}
-
-/* Custom scrollbars */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-track {
-  background: #030712;
-}
-::-webkit-scrollbar-thumb {
-  background: #1e293b;
-  border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #334155;
 }

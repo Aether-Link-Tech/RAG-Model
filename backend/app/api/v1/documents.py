@@ -12,7 +12,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
@@ -20,17 +20,21 @@ from backend.app.api.deps import CurrentUser, DbSession
 from backend.app.core.config import settings
 from backend.app.models.document import Document
 from backend.app.schemas.document import DocumentResponse, Visibility
-from backend.app.services.document_ingest import build_storage_path, index_document
 from backend.app.services.clamav import (
     ClamAVUnavailableError,
     InfectedFileError,
     scan_and_quarantine,
 )
+from backend.app.services.document_ingest import (
+    build_storage_path,
+    index_document,
+    reindex_document_in_background,
+)
 from backend.app.services.hash_service import (
     FileSizeLimitExceededError,
     compute_sha256_and_size_stream,
 )
-from backend.app.services.vector_store import delete_document_chunks
+from backend.app.services.vector_store import delete_document_chunks, rename_document_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -479,6 +483,209 @@ async def get_document(
     return _to_response(
         await _accessible_document(db, current_user.id, document_id), current_user.id
     )
+
+
+@router.put(
+    "/{document_id}",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def update_document(
+    request: Request,
+    document_id: uuid.UUID,
+    db: DbSession,
+    current_user: CurrentUser,
+    background_tasks: BackgroundTasks,
+    file: UploadFile | None = File(default=None),
+    filename: str | None = Form(default=None),
+) -> DocumentResponse:
+    """Rename a document or replace its contents and queue a fresh index.
+
+    Only the owner may update. Another user's private document -> 404 (never
+    revealed); another user's public document -> 403.
+    """
+    document = await _accessible_document(db, current_user.id, document_id)
+    if document.user_id != current_user.id:
+        if document.visibility == "private":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the owner can update this document.",
+        )
+    client_ip = request.client.host if request.client else "unknown"
+    # Captured up front: after a rollback ORM attributes expire and must not be
+    # lazy-loaded inside the async error handlers.
+    actor_id = current_user.id
+    actor_role = current_user.role
+    doc_id = document.id
+    if file is None and filename is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide a new filename, a replacement file, or both.",
+        )
+
+    if filename is not None:
+        filename = Path(filename).name.strip()
+        if not filename or len(filename) > 255:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Filename must contain 1 to 255 characters.",
+            )
+        if file is None and Path(filename).suffix.lower() != Path(document.filename).suffix.lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Renaming cannot change the file type. Upload a replacement file to change formats.",
+            )
+
+    if file is None:
+        document.filename = filename or document.filename
+        await db.commit()
+        try:
+            rename_document_chunks(
+                user_id=document.user_id,
+                document_id=document.id,
+                filename=document.filename,
+                visibility="public" if document.visibility == "public" else "private",
+            )
+        except Exception:
+            # The database name is authoritative; a later re-index refreshes vector metadata.
+            background_tasks.add_task(
+                reindex_document_in_background, document.id, current_user.id, current_user.role
+            )
+        await db.refresh(document)
+        return _to_response(document, current_user.id)
+
+    replacement_name = filename or Path(file.filename or document.filename).name
+    replacement_name = Path(replacement_name).name
+    # A replacement goes through the same validation chain as a new upload.
+    try:
+        _validate_extension_chain(replacement_name)
+        suffix, mime_type = _resolve_mime(replacement_name, file.content_type)
+        await _validate_file_magic_bytes(file, suffix)
+    except HTTPException as exc:
+        await log_security_event(
+            str(current_user.id), replacement_name, f"Replacement rejected: {exc.detail}", client_ip
+        )
+        raise
+    try:
+        file_hash, file_size = await compute_sha256_and_size_stream(
+            file,
+            chunk_size=STREAM_CHUNK_SIZE,
+            max_bytes=settings.MAX_UPLOAD_BYTES,
+        )
+    except FileSizeLimitExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_max_size_message(),
+        ) from exc
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes).")
+
+    duplicate_query = select(Document.id).where(
+        Document.id != document.id,
+        Document.visibility == document.visibility,
+        Document.file_hash == file_hash,
+    )
+    if document.visibility == "private":
+        duplicate_query = duplicate_query.where(Document.user_id == current_user.id)
+    existing = await db.execute(duplicate_query)
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_duplicate_conflict_detail(
+                "public" if document.visibility == "public" else "private"
+            ),
+        )
+
+    visibility: Visibility = "public" if document.visibility == "public" else "private"
+    replacement_path = Path(build_storage_path(current_user.id, document.id, replacement_name))
+    replacement_path = replacement_path.with_name(
+        f"{document.id}-{uuid.uuid4().hex}{suffix}"
+    )
+    temporary_path = replacement_path.with_suffix(replacement_path.suffix + ".tmp")
+    old_path = document.file_path
+
+    try:
+        await file.seek(0)
+        written_bytes = 0
+        with open(temporary_path, "wb") as buffer:
+            while chunk := await file.read(STREAM_CHUNK_SIZE):
+                written_bytes += len(chunk)
+                if written_bytes > settings.MAX_UPLOAD_BYTES:
+                    raise FileSizeLimitExceededError(settings.MAX_UPLOAD_BYTES)
+                buffer.write(chunk)
+
+        await asyncio.to_thread(scan_and_quarantine, str(temporary_path), actor_id, doc_id)
+        os.replace(temporary_path, replacement_path)
+
+        document.filename = replacement_name
+        document.file_path = str(replacement_path)
+        document.mime_type = mime_type
+        document.file_size = written_bytes
+        document.file_hash = file_hash
+        document.status = "processing"
+        document.error_message = None
+        await db.commit()
+    except FileSizeLimitExceededError as exc:
+        _best_effort_remove(str(temporary_path))
+        _best_effort_remove(str(replacement_path))
+        await _safe_rollback(db)
+        raise HTTPException(400, detail=_max_size_message()) from exc
+    except IntegrityError as exc:
+        _best_effort_remove(str(temporary_path))
+        _best_effort_remove(str(replacement_path))
+        await _safe_rollback(db)
+        if _is_duplicate_conflict(exc):
+            raise HTTPException(
+                status_code=409,
+                detail=_duplicate_conflict_detail(
+                    visibility
+                ),
+            ) from exc
+        raise
+    except InfectedFileError as exc:
+        _best_effort_remove(str(temporary_path))
+        await _safe_rollback(db)
+        await log_security_event(
+            str(actor_id), replacement_name, f"Malware detected in replacement: {exc.signature}", client_ip
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Malware was detected. The file was quarantined and the update was blocked.",
+        ) from exc
+    except ClamAVUnavailableError as exc:
+        _best_effort_remove(str(temporary_path))
+        await _safe_rollback(db)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Malware scanning is temporarily unavailable. Please retry the update.",
+        ) from exc
+    except BaseException:
+        _best_effort_remove(str(temporary_path))
+        _best_effort_remove(str(replacement_path))
+        await _safe_rollback(db)
+        raise
+
+    try:
+        delete_document_chunks(
+            user_id=document.user_id,
+            document_id=document.id,
+            visibility=visibility,
+        )
+    except Exception as exc:
+        document.status = "failed"
+        document.error_message = "Old document index could not be cleared before re-indexing."
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The document was replaced, but its old index could not be cleared. Retry the update.",
+        ) from exc
+
+    if old_path != document.file_path:
+        _best_effort_remove(old_path)
+    background_tasks.add_task(reindex_document_in_background, doc_id, actor_id, actor_role)
+    await db.refresh(document)
+    return _to_response(document, actor_id)
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

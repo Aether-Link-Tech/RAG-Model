@@ -65,6 +65,15 @@ jobs:
       - name: Run migrations
         run: alembic -c backend/alembic.ini upgrade head
 
+      - name: Create and migrate test database
+        env:
+          PGPASSWORD: postgres
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/rag_db_test
+          MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/rag_db_test
+        run: |
+          psql -h localhost -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='rag_db_test'" | grep -q 1 || psql -h localhost -U postgres -c "CREATE DATABASE rag_db_test"
+          alembic -c backend/alembic.ini upgrade head
+
       - name: Run tests (includes TC-ISO private KB isolation)
         working-directory: backend
         run: python -m pytest tests -v

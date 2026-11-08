@@ -216,7 +216,13 @@ async def publish_private_document(
             new_document = await index_document(db, new_document)
             indexed = new_document.status == "indexed"
     except Exception:
-        logger.exception("Publish: public indexing failed for new document %s", new_id)
+        logger.exception(
+            "Publish: public indexing failed for new document %s (old document %s; "
+            "orphaned old file left at %s)",
+            new_id,
+            old_id,
+            old_path,
+        )
         indexed = False
         try:
             delete_document_chunks(user_id=owner_id, document_id=new_id, visibility="public")
@@ -234,7 +240,9 @@ async def publish_private_document(
     audit_filename = filename
     if not indexed:
         # Keep the copied file and the new public row so indexing can be retried.
-        await _audit_published(owner_id, audit_filename, old_id, new_id, client_ip)
+        await _audit_published(
+            owner_id, audit_filename, old_id, new_id, client_ip, indexing_failed=True
+        )
         return PublishResult(document=new_document)
 
     # --- 5. Remove the old private chunks.
@@ -256,12 +264,25 @@ async def publish_private_document(
 
 
 async def _audit_published(
-    owner_id: uuid.UUID, filename: str | None, old_id: uuid.UUID, new_id: uuid.UUID, ip: str
+    owner_id: uuid.UUID,
+    filename: str | None,
+    old_id: uuid.UUID,
+    new_id: uuid.UUID,
+    ip: str,
+    *,
+    indexing_failed: bool = False,
 ) -> None:
+    if indexing_failed:
+        reason = (
+            f"Publish completed with failed indexing: private document {old_id} "
+            f"is now public document {new_id} with status failed"
+        )
+    else:
+        reason = f"Published private document {old_id} as public document {new_id}"
     await audit_log.record_security_event(
         event_type=audit_log.DOCUMENT_PUBLISHED,
         user_id=owner_id,
         filename=filename,
-        reason=f"Published private document {old_id} as public document {new_id}",
+        reason=reason,
         ip_address=None if ip == "unknown" else ip,
     )

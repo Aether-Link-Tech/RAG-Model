@@ -299,6 +299,46 @@ async def test_indexing_failure_after_publish_keeps_failed_public_document(
 
 
 @pytest.mark.asyncio
+async def test_failed_indexing_after_publish_keeps_old_file_and_audits_distinctly(
+    async_client, test_user: User, db_session: AsyncSession, monkeypatch
+):
+    """Indexing fails after the commit: 201, new row 'failed', old file kept, distinct audit reason."""
+    from backend.app.services import audit_log
+
+    def _boom(**kwargs):
+        raise RuntimeError("chroma is down")
+
+    events = []
+    real_record = audit_log.record_security_event
+
+    async def _capture(**kwargs):
+        events.append(kwargs)
+        await real_record(**kwargs)
+
+    monkeypatch.setattr(document_publish, "copy_private_chunks_to_public", _boom)
+    monkeypatch.setattr(audit_log, "record_security_event", _capture)
+    doc = await _upload(async_client, test_user, _content())
+    old_path = (await _row(db_session, test_user, doc["id"])).file_path
+
+    response = await _publish(async_client, test_user, doc["id"])
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "failed"
+    new_row = await _row(db_session, test_user, body["id"])
+    assert new_row is not None and new_row.status == "failed"
+    assert os.path.exists(old_path)  # the old file is kept, not removed
+    assert os.path.exists(new_row.file_path)
+
+    published = [e for e in events if e["event_type"] == audit_log.DOCUMENT_PUBLISHED]
+    assert len(published) == 1
+    reason = published[0]["reason"]
+    assert reason.startswith("Publish completed with failed indexing")
+    assert doc["id"] in reason and body["id"] in reason
+    assert not reason.startswith("Published private document")
+
+
+@pytest.mark.asyncio
 async def test_chunks_move_from_private_to_public_collection(
     async_client, test_user: User
 ):

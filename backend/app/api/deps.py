@@ -11,6 +11,7 @@ from backend.app.core.security import TokenValidationError, decode_access_token
 from backend.app.db.rls import configure_rls_context
 from backend.app.db.session import get_db
 from backend.app.models.user import User
+from backend.app.services.auth_state import AuthStateUnavailableError, is_token_blacklisted
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
@@ -40,6 +41,22 @@ async def get_current_user(
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+
+    # FR-003: a token revoked by logout is dead even before it expires. If the
+    # blacklist cannot be checked, fail closed.
+    try:
+        revoked = await is_token_blacklisted(credentials.credentials)
+    except AuthStateUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service is temporarily unavailable.",
+        ) from exc
+    if revoked:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked. Please sign in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     user_id = token_payload["user_id"]
     result = await db.execute(

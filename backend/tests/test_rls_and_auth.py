@@ -19,7 +19,12 @@ from backend.app.core.config import (
     Settings,
     settings,
 )
-from backend.app.core.security import create_access_token, decode_access_token, hash_password
+from backend.app.core.security import (
+    create_access_token,
+    create_email_verification_token,
+    decode_access_token,
+    hash_password,
+)
 from backend.app.db.rls import (
     clear_rls_context,
     configure_rls_context,
@@ -50,6 +55,7 @@ async def test_auth_login_issues_valid_jwt_and_rejects_invalid_credentials(
         hashed_password=hash_password(password),
         role="user",
         is_deleted=False,
+        is_verified=True,
     )
     db_session.add(user)
     await db_session.commit()
@@ -562,20 +568,32 @@ async def test_admin_self_registration_attempt_forced_to_user_role(
     email = f"attacker-{uuid.uuid4().hex[:8]}@example.com"
     password = "AttackerPassword123!"
 
-    reg_res = await async_client.post(
+    # Unauthenticated account creation through /users is closed (admin-only now).
+    legacy_res = await async_client.post(
         "/api/v1/users",
         json={"email": email, "password": password, "role": "admin"},
     )
+    assert legacy_res.status_code == 401
+
+    # Self-registration ignores any client-supplied role.
+    reg_res = await async_client.post(
+        "/api/v1/auth/register",
+        json={"full_name": "Attacker", "email": email, "password": password, "role": "admin"},
+    )
     assert reg_res.status_code == 201
-    created_data = reg_res.json()
-    created_uid = uuid.UUID(created_data["id"])
-    assert created_data["role"] == "user"
+    created_uid = uuid.UUID(reg_res.json()["user_id"])
 
     try:
         # Verify database record has role == 'user'
         db_user = await db_session.get(User, created_uid)
         assert db_user is not None
         assert db_user.role == "user"
+
+        verify_res = await async_client.get(
+            "/api/v1/auth/verify-email",
+            params={"token": create_email_verification_token(created_uid, email)},
+        )
+        assert verify_res.status_code == 200
 
         # Log in as the newly registered user and verify JWT claim has role == 'user'
         login_res = await async_client.post(
@@ -846,11 +864,34 @@ def test_security_configuration_rejects_insecure_production_settings():
             APP_DATABASE_URL=f"postgresql+asyncpg://rag_app:{DEFAULT_DEV_APP_DB_PASSWORD}@localhost:5432/rag_db",
         )
 
-    # 6. Valid production configuration -> accepted
+    # 6. Production with captcha enabled but no reCAPTCHA secret -> rejected (FR-001)
+    with pytest.raises(ValueError, match="RECAPTCHA_SECRET_KEY"):
+        Settings(
+            ENV="production",
+            SECRET_KEY=strong_secret,
+            APP_DATABASE_URL=secure_app_db_url,
+            RECAPTCHA_ENABLED=True,
+            RECAPTCHA_SECRET_KEY="",
+            SMTP_HOST="smtp.example.com",
+        )
+
+    # 7. Production without SMTP -> rejected (verification emails could not be sent)
+    with pytest.raises(ValueError, match="SMTP_HOST"):
+        Settings(
+            ENV="production",
+            SECRET_KEY=strong_secret,
+            APP_DATABASE_URL=secure_app_db_url,
+            RECAPTCHA_SECRET_KEY="prod-recaptcha-secret",
+            SMTP_HOST="",
+        )
+
+    # 8. Valid production configuration -> accepted
     prod_settings = Settings(
         ENV="production",
         SECRET_KEY=strong_secret,
         APP_DATABASE_URL=secure_app_db_url,
+        RECAPTCHA_SECRET_KEY="prod-recaptcha-secret",
+        SMTP_HOST="smtp.example.com",
     )
     assert prod_settings.ENV == "production"
     assert prod_settings.app_database_url == secure_app_db_url

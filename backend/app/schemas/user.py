@@ -7,14 +7,19 @@ from backend.app.core.roles import UserRole
 
 
 class UserCreate(BaseModel):
+    """Admin-created account (POST /users). Self-registration uses /auth/register."""
+
     email: str = Field(..., min_length=3, max_length=255)
     password: str = Field(..., min_length=8, max_length=128)
+    full_name: str | None = Field(default=None, max_length=255)
 
 
 class UserResponse(BaseModel):
     id: uuid.UUID
     email: str
+    full_name: str | None = None
     role: UserRole
+    is_verified: bool
     created_at: datetime
     is_deleted: bool
 

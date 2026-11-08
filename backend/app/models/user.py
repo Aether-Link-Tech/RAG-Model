@@ -28,6 +28,17 @@ class User(Base):
         String(255),
         nullable=False
     )
+    full_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True
+    )
+    # FR-001: self-registered accounts stay pending until the email is verified.
+    is_verified: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False
+    )
     role: Mapped[str] = mapped_column(
         String(20),
         default=UserRole.USER.value,
@@ -54,6 +65,10 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("role IN ('admin', 'user')", name="check_user_role"),
     )
+
+    @property
+    def account_status(self) -> str:
+        return "active" if self.is_verified else "pending_verification"
 
     @property
     def is_admin(self) -> bool:

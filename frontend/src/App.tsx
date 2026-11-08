@@ -5,7 +5,9 @@ import AppLayout from './layouts/AppLayout';
 import SignupPage from './pages/signup';
 import LoginPage from './pages/login';
 import DocumentsPage from './pages/documents';
-import { GuestOnly, RequireAuth } from './routes/guards';
+import VerifyEmailPage from './pages/verify-email';
+import AuditLogPage from './pages/audit-log';
+import { GuestOnly, RequireAdmin, RequireAuth } from './routes/guards';
 import { ToastProvider, useToast } from './components/Toast';
 
 // When the token expires mid-session, go back to login with a clear message.
@@ -39,6 +41,11 @@ export function AppRoutes() {
           <Route path="/signup" element={<SignupPage />} />
         </Route>
 
+        {/* Opened from the verification email; works signed in or out. */}
+        <Route element={<AuthLayout />}>
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
+        </Route>
+
         <Route
           element={
             <RequireAuth>
@@ -47,6 +54,14 @@ export function AppRoutes() {
           }
         >
           <Route path="/documents" element={<DocumentsPage />} />
+          <Route
+            path="/admin/audit"
+            element={
+              <RequireAdmin>
+                <AuditLogPage />
+              </RequireAdmin>
+            }
+          />
         </Route>
 
         <Route path="*" element={<Navigate to="/documents" replace />} />

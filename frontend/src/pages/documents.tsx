@@ -4,14 +4,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CircleAlert, FileStack, Globe, Lock, RefreshCw, Search, Sparkles } from 'lucide-react';
 import UploadPanel from '../components/UploadPanel';
 import DocumentDrawer from '../components/DocumentDrawer';
+import CollectionsBar, { type CollectionFilter } from '../components/CollectionsBar';
 import FileIcon from '../components/FileIcon';
 import { StatusBadge, VisibilityBadge } from '../components/Badges';
 import { useToast } from '../components/Toast';
 import { useSession } from '../hooks/useSession';
 import { listDocuments } from '../services/documentService';
+import { listCollections } from '../services/collectionService';
 import { getErrorMessage } from '../services/api';
 import { formatBytes, relativeTime } from '../utils/format';
-import type { Document } from '../types';
+import type { Collection, Document } from '../types';
 
 type Filter = 'all' | 'mine' | 'shared' | 'failed';
 
@@ -31,6 +33,16 @@ export default function DocumentsPage() {
   const [filter, setFilter] = useState<Filter>('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [collection, setCollection] = useState<CollectionFilter>('all');
+
+  const loadCollections = useCallback(async () => {
+    try {
+      setCollections(await listCollections());
+    } catch {
+      /* the documents list still works without collections */
+    }
+  }, []);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
@@ -46,7 +58,8 @@ export default function DocumentsPage() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadCollections();
+  }, [load, loadCollections]);
 
   // Keep polling while anything is still being processed.
   const busyCount = docs?.filter((d) => d.status === 'pending' || d.status === 'processing').length ?? 0;
@@ -70,12 +83,15 @@ export default function DocumentsPage() {
     const q = query.trim().toLowerCase();
     return (docs ?? []).filter((d) => {
       if (q && !d.filename.toLowerCase().includes(q)) return false;
+      // Collections only contain your own documents (FR-012).
+      if (collection === 'none' && (!d.is_owner || d.collection_id)) return false;
+      if (collection !== 'all' && collection !== 'none' && d.collection_id !== collection) return false;
       if (filter === 'mine') return d.is_owner;
       if (filter === 'shared') return d.visibility === 'public';
       if (filter === 'failed') return d.status === 'failed';
       return true;
     });
-  }, [docs, query, filter]);
+  }, [docs, query, filter, collection]);
 
   const selected = docs?.find((d) => d.id === selectedId) ?? null;
   const canDelete = (d: Document) => d.is_owner || (d.visibility === 'public' && user?.role === 'admin');
@@ -123,6 +139,16 @@ export default function DocumentsPage() {
 
       <div className="documents-grid">
         <section className="panel list-panel">
+          <CollectionsBar
+            collections={collections}
+            active={collection}
+            uncategorizedCount={(docs ?? []).filter((d) => d.is_owner && !d.collection_id).length}
+            onSelect={setCollection}
+            onChanged={() => {
+              void loadCollections();
+              void load(true);
+            }}
+          />
           <div className="list-toolbar">
             <label className="search">
               <Search size={16} />
@@ -217,7 +243,12 @@ export default function DocumentsPage() {
       <DocumentDrawer
         doc={selected}
         canDelete={selected ? canDelete(selected) : false}
+        collections={collections}
         onClose={() => setSelectedId(null)}
+        onMoved={(doc) => {
+          upsert(doc);
+          void loadCollections();
+        }}
         onChanged={(doc) => {
           upsert(doc);
           if (doc.status === 'processing') toast.info('Re-indexing', 'The document will be searchable again shortly.');
@@ -225,6 +256,7 @@ export default function DocumentsPage() {
         onDeleted={(id) => {
           setSelectedId(null);
           setDocs((list) => (list ?? []).filter((d) => d.id !== id));
+          void loadCollections();
         }}
       />
     </div>

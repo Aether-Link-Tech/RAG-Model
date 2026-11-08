@@ -70,8 +70,14 @@ services:
     image: rag-backend:latest
     container_name: rag_backend
     restart: unless-stopped
+    # Secrets (SECRET_KEY, PII_ENCRYPTION_KEY, PII_INDEX_KEY, ...) come from .env and are
+    # never hardcoded. Values under `environment:` below take precedence over .env.
+    env_file:
+      - path: .env
+        required: false
+    # Loopback only (API docs / local tools); browsers use https://localhost via Caddy.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -101,6 +107,10 @@ services:
       # into the parser sandbox instead of bind-mounting them (FR-067).
       PARSER_INPUT_MODE: stdin
       PARSER_SANDBOX_ENABLED: "True"
+      # Verification emails go to Mailpit; links point at the HTTPS entry point.
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-https://localhost}
     volumes:
       - uploads_data:/data/uploads
       - quarantine_data:/data/quarantine
@@ -118,12 +128,38 @@ services:
     image: rag-frontend:latest
     container_name: rag_frontend
     restart: unless-stopped
-    # Open http://localhost:3000 (nginx serves the app and proxies /api to backend).
-    # Stop `npm run dev` first, or set FRONTEND_PORT to another port.
-    ports:
-      - "${FRONTEND_PORT:-3000}:80"
+    # Not published: browsers reach it only through Caddy (HTTPS, TLS 1.3).
+    expose:
+      - "80"
     depends_on:
       - backend
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: rag_caddy
+    restart: unless-stopped
+    # Open https://localhost  (http://localhost redirects to HTTPS)
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+
+  mailpit:
+    # Catches outgoing email in development (FR-001 verification links).
+    # Inbox: http://localhost:8025
+    image: axllent/mailpit:v1.21
+    container_name: rag_mailpit
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:1025:1025"
 
 volumes:
   postgres_data:
@@ -133,3 +169,5 @@ volumes:
   uploads_data:
   quarantine_data:
   hf_cache:
+  caddy_data:
+  caddy_config:

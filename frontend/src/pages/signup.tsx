@@ -1,11 +1,12 @@
 // Register page (/signup) — AL-119
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Check, CircleCheckBig, Lock, Mail, User, UserPlus } from 'lucide-react';
+import { ArrowRight, Check, Lock, Mail, User, UserPlus } from 'lucide-react';
 import InputField from '../components/InputField';
 import RobotCheck from '../components/RobotCheck';
 import Button from '../components/Button';
 import Alert from '../components/Alert';
+import CheckEmail from '../components/CheckEmail';
 import { signup } from '../services/authService';
 import { getErrorMessage, hasStatus } from '../services/api';
 import { EMAIL_MAX, EMAIL_MIN, NAME_MAX, PASSWORD_MAX, PASSWORD_MIN } from '../services/config';
@@ -63,7 +64,8 @@ export function validate(form: SignupForm, isHuman: boolean): string {
 
 export default function SignupPage() {
   const [form, setForm] = useState<SignupForm>({ fullName: '', email: '', password: '', confirm: '' });
-  const [isHuman, setIsHuman] = useState(false);
+  const [captcha, setCaptcha] = useState<string | null>(null);
+  const [captchaReset, setCaptchaReset] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [registeredEmail, setRegisteredEmail] = useState('');
@@ -77,16 +79,22 @@ export default function SignupPage() {
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
 
-    const problem = validate(form, isHuman);
+    const problem = validate(form, Boolean(captcha));
     setError(problem);
     if (problem) return;
 
     setLoading(true);
     try {
-      // TODO(FR-001): send fullName once the backend stores it; today only email + password are accepted.
-      await signup(form.email.trim(), form.password);
-      setRegisteredEmail(form.email.trim());
+      await signup({
+        fullName: form.fullName,
+        email: form.email,
+        password: form.password,
+        captcha: captcha!,
+      });
+      setRegisteredEmail(form.email.trim().toLowerCase());
     } catch (err) {
+      // A captcha solution is single-use: ask for a fresh one after any failed attempt.
+      setCaptchaReset((n) => n + 1);
       if (hasStatus(err, 409)) {
         setError('An account with this email already exists. Try signing in instead.');
       } else {
@@ -98,20 +106,7 @@ export default function SignupPage() {
   }
 
   if (registeredEmail) {
-    return (
-      <div className="signup-success">
-        <span className="signup-success__icon">
-          <CircleCheckBig size={30} />
-        </span>
-        <h2>Account created</h2>
-        <p className="auth-card__subtitle">
-          <strong>{registeredEmail}</strong> is ready. You can sign in now.
-        </p>
-        <Link to="/login" className="button button--primary button--wide">
-          Go to sign in <ArrowRight size={18} className="button__arrow" />
-        </Link>
-      </div>
-    );
+    return <CheckEmail email={registeredEmail} />;
   }
 
   return (
@@ -196,10 +191,10 @@ export default function SignupPage() {
 
         <div className="form-options">
           <RobotCheck
-            verified={isHuman}
-            onVerified={(value) => {
-              setIsHuman(value);
-              if (value) setError('');
+            resetKey={captchaReset}
+            onSolved={(solution) => {
+              setCaptcha(solution);
+              if (solution) setError('');
             }}
           />
         </div>

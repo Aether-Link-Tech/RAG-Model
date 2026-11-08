@@ -5,9 +5,11 @@ import { ArrowRight, LockKeyhole, LogIn, Mail } from 'lucide-react';
 import InputField from '../components/InputField';
 import Button from '../components/Button';
 import Alert from '../components/Alert';
+import CheckEmail from '../components/CheckEmail';
+import RobotCheck from '../components/RobotCheck';
 import { useToast } from '../components/Toast';
 import { login } from '../services/authService';
-import { getErrorMessage, hasStatus } from '../services/api';
+import { captchaRequired, getErrorMessage, hasStatus } from '../services/api';
 import { EMAIL_MAX, PASSWORD_MAX, PASSWORD_MIN } from '../services/config';
 
 export default function LoginPage() {
@@ -18,6 +20,11 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // FR-002: after 3 failed attempts the server requires a captcha with every attempt.
+  const [needsCaptcha, setNeedsCaptcha] = useState(false);
+  const [captcha, setCaptcha] = useState<string | null>(null);
+  const [captchaReset, setCaptchaReset] = useState(0);
+  const [unverifiedEmail, setUnverifiedEmail] = useState('');
 
   const from = (location.state as { from?: string } | null)?.from ?? '/documents';
 
@@ -27,20 +34,38 @@ export default function LoginPage() {
       setError('Please enter your email and password.');
       return;
     }
+    if (needsCaptcha && !captcha) {
+      setError('Please confirm that you are not a robot.');
+      return;
+    }
     setError('');
     setLoading(true);
     try {
-      const user = await login(email, password);
-      toast.success('Welcome back', user.email);
+      const user = await login(email, password, captcha ?? undefined);
+      toast.success('Welcome back', user.full_name || user.email);
       navigate(from, { replace: true });
     } catch (err) {
+      if (captchaRequired(err)) setNeedsCaptcha(true);
+      setCaptchaReset((n) => n + 1); // a captcha solution can only be used once
       if (hasStatus(err, 401)) setError('Invalid email or password.');
-      else if (hasStatus(err, 423)) setError('Too many failed attempts. Your account is locked for 15 minutes.');
+      else if (hasStatus(err, 403)) setUnverifiedEmail(email.trim().toLowerCase());
+      else if (hasStatus(err, 423)) setError('Too many failed attempts. Sign-in is locked for 15 minutes.');
       else if (hasStatus(err, 429)) setError('Too many requests. Please wait a moment and try again.');
+      else if (hasStatus(err, 400) && captchaRequired(err)) setError('Please complete the robot check to continue.');
       else setError(getErrorMessage(err, 'Unable to sign in. Please check your connection and try again.'));
     } finally {
       setLoading(false);
     }
+  }
+
+  if (unverifiedEmail) {
+    return (
+      <CheckEmail
+        email={unverifiedEmail}
+        title="Verify your email first"
+        intro="Your account isn’t active yet. We sent a verification link to"
+      />
+    );
   }
 
   return (
@@ -77,7 +102,13 @@ export default function LoginPage() {
           onChange={(e) => setPassword(e.target.value)}
         />
 
-        <div className="form-options" />
+        <div className="form-options">
+          {needsCaptcha && (
+            <div className="captcha-reveal">
+              <RobotCheck resetKey={captchaReset} onSolved={setCaptcha} />
+            </div>
+          )}
+        </div>
         <Alert message={error} />
 
         <Button type="submit" wide loading={loading} loadingText="Signing in">

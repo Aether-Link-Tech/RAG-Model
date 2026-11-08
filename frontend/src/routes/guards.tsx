@@ -16,3 +16,10 @@ export function GuestOnly({ children }: { children: ReactNode }) {
   if (isAuthenticated) return <Navigate to="/documents" replace />;
   return <>{children}</>;
 }
+
+// Admin-only pages (FR-004). The API enforces this too; this only hides the page.
+export function RequireAdmin({ children }: { children: ReactNode }) {
+  const { user } = useSession();
+  if (user?.role !== 'admin') return <Navigate to="/documents" replace />;
+  return <>{children}</>;
+}

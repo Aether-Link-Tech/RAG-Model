@@ -10,7 +10,7 @@ describe('signup validation (FR-001 rules)', () => {
   });
 
   it.each([
-    ['short1!A', ''],
+    ['Sh0rt!x', 'at least 8'],
     ['alllowercase1!', 'upper & lower case'],
     ['NoDigits!!', 'a number'],
     ['NoSpecial123', 'a special character'],

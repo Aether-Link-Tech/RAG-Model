@@ -16,25 +16,36 @@ import {
   renameDocument,
   replaceDocument,
 } from '../services/documentService';
+import { moveDocument } from '../services/collectionService';
 import { getErrorMessage, hasStatus } from '../services/api';
 import { describeUploadError, type UploadRejection } from '../utils/uploadErrors';
 import { extensionOf, formatBytes, formatDate } from '../utils/format';
-import type { Document } from '../types';
+import type { Collection, Document } from '../types';
 
 interface Props {
   doc: Document | null;
   canDelete: boolean;
+  collections?: Collection[];
   onClose: () => void;
   onChanged: (doc: Document) => void;
+  onMoved?: (doc: Document) => void;
   onDeleted: (id: string) => void;
 }
 
-export default function DocumentDrawer({ doc, canDelete, onClose, onChanged, onDeleted }: Props) {
+export default function DocumentDrawer({
+  doc,
+  canDelete,
+  collections = [],
+  onClose,
+  onChanged,
+  onMoved,
+  onDeleted,
+}: Props) {
   const toast = useToast();
   const replaceInput = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState('');
-  const [busy, setBusy] = useState<null | 'download' | 'rename' | 'replace' | 'delete'>(null);
+  const [busy, setBusy] = useState<null | 'download' | 'rename' | 'replace' | 'delete' | 'move'>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [rejection, setRejection] = useState<(UploadRejection & { filename: string }) | null>(null);
 
@@ -54,6 +65,21 @@ export default function DocumentDrawer({ doc, canDelete, onClose, onChanged, onD
   if (!doc) return null;
   const current = doc;
   const owner = current.is_owner;
+
+  async function move(collectionId: string | null) {
+    if (!doc) return;
+    setBusy('move');
+    try {
+      const updated = await moveDocument(doc.id, collectionId);
+      const target = collections.find((c) => c.id === collectionId)?.name ?? 'Uncategorized';
+      toast.success('Moved', `${updated.filename} → ${target}`);
+      (onMoved ?? onChanged)(updated);
+    } catch (err) {
+      toast.error('Could not move document', getErrorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function download() {
     setBusy('download');
@@ -194,6 +220,26 @@ export default function DocumentDrawer({ doc, canDelete, onClose, onChanged, onD
             <dt>Owner</dt>
             <dd>{owner ? 'You' : 'Another user (shared publicly)'}</dd>
           </div>
+          {owner && (
+            <div className="drawer__collection">
+              <dt>Collection</dt>
+              <dd>
+                <select
+                  aria-label="Move to collection"
+                  value={current.collection_id ?? ''}
+                  disabled={busy !== null}
+                  onChange={(e) => void move(e.target.value || null)}
+                >
+                  <option value="">Uncategorized</option>
+                  {collections.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </dd>
+            </div>
+          )}
           <div>
             <dt>SHA-256</dt>
             <dd className="mono" title={current.file_hash}>

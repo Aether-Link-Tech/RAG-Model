@@ -1,7 +1,7 @@
 // Signed-in shell: top bar with navigation, user chip and logout (FR-003 UI).
 import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { FileText, LogOut, Search, ShieldCheck } from 'lucide-react';
+import { FileText, LogOut, Search, ShieldAlert, ShieldCheck } from 'lucide-react';
 import Logo from '../components/Logo';
 import { useToast } from '../components/Toast';
 import { useSession } from '../hooks/useSession';
@@ -31,6 +31,11 @@ export default function AppLayout() {
             <NavLink to="/documents" className={({ isActive }) => `app-nav__link${isActive ? ' is-active' : ''}`}>
               <FileText size={16} /> Documents
             </NavLink>
+            {user?.role === 'admin' && (
+              <NavLink to="/admin/audit" className={({ isActive }) => `app-nav__link${isActive ? ' is-active' : ''}`}>
+                <ShieldAlert size={16} /> Audit log
+              </NavLink>
+            )}
             <span className="app-nav__link is-disabled" title="Coming in Sprint 2 (hybrid search)">
               <Search size={16} /> Search <small>soon</small>
             </span>

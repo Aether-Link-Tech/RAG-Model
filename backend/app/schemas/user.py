@@ -3,6 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.app.core.roles import UserRole
+
 
 class UserCreate(BaseModel):
     email: str = Field(..., min_length=3, max_length=255)
@@ -12,8 +14,12 @@ class UserCreate(BaseModel):
 class UserResponse(BaseModel):
     id: uuid.UUID
     email: str
-    role: str
+    role: UserRole
     created_at: datetime
     is_deleted: bool
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserRoleUpdate(BaseModel):
+    role: UserRole

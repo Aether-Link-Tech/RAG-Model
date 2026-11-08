@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.app.api.deps import CurrentUser, DbSession
 from backend.app.core.config import settings
+from backend.app.core.roles import UserRole
 from backend.app.models.document import Document
 from backend.app.schemas.document import DocumentResponse, Visibility
 from backend.app.services.clamav import (
@@ -732,7 +733,7 @@ async def delete_document(
     if (
         document.visibility == "public"
         and document.user_id != current_user.id
-        and current_user.role != "admin"
+        and current_user.role != UserRole.ADMIN
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

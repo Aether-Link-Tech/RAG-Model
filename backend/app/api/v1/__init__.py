@@ -1,9 +1,10 @@
 from fastapi import APIRouter
 
-from backend.app.api.v1 import auth, documents, retrieval, users
+from backend.app.api.v1 import auth, documents, retrieval, users, collections
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(users.router)
 api_router.include_router(documents.router)
 api_router.include_router(retrieval.router)
+api_router.include_router(collections.router, prefix="/collections", tags=["collections"])

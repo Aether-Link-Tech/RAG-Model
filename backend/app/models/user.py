@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import String, Boolean, DateTime, CheckConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from backend.app.core.roles import UserRole
 from backend.app.db.base import Base
 
 if TYPE_CHECKING:
@@ -29,7 +30,7 @@ class User(Base):
     )
     role: Mapped[str] = mapped_column(
         String(20),
-        default="user",
+        default=UserRole.USER.value,
         nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -53,6 +54,10 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("role IN ('admin', 'user')", name="check_user_role"),
     )
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == UserRole.ADMIN
 
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email} role={self.role}>"

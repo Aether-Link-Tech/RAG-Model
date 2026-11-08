@@ -9,6 +9,7 @@ import jwt
 from jwt import PyJWTError
 
 from backend.app.core.config import settings
+from backend.app.core.roles import UserRole
 
 
 class TokenValidationError(ValueError):
@@ -38,14 +39,18 @@ def verify_password(password: str, hashed_password: str) -> bool:
 def create_access_token(
     subject: uuid.UUID | str,
     *,
-    role: str = "user",
+    role: UserRole | str = UserRole.USER,
     expires_delta: timedelta | None = None,
     issuer: str | None = None,
     audience: str | None = None,
     secret_key: str | None = None,
     algorithm: str | None = None,
 ) -> str:
-    """Create a signed JWT access token bound to the caller's UUID (`sub`)."""
+    """Create a signed JWT access token bound to the caller's UUID (`sub`) and role (`role`).
+
+    Raises ValueError if `role` is not a valid `UserRole`.
+    """
+    role_claim = UserRole(role).value
     now = datetime.now(timezone.utc)
     delta = (
         expires_delta
@@ -55,7 +60,7 @@ def create_access_token(
     expire = now + delta
     payload: dict[str, Any] = {
         "sub": str(subject),
-        "role": role,
+        "role": role_claim,
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp()),
         "iss": issuer if issuer is not None else settings.JWT_ISSUER,
@@ -69,7 +74,10 @@ def create_access_token(
 
 
 def decode_access_token(token: str) -> dict[str, Any]:
-    """Validate JWT signature, expiration, issuer, audience, and UUID subject."""
+    """Validate JWT signature, expiration, issuer, audience, UUID subject, and role claim.
+
+    On success `payload["user_id"]` is a UUID and `payload["role"]` is a `UserRole`.
+    """
     if not token or not isinstance(token, str):
         raise TokenValidationError("Missing authentication token.")
     try:
@@ -79,7 +87,7 @@ def decode_access_token(token: str) -> dict[str, Any]:
             algorithms=[settings.ALGORITHM],
             issuer=settings.JWT_ISSUER,
             audience=settings.JWT_AUDIENCE,
-            options={"require": ["sub", "exp", "iat", "iss", "aud"]},
+            options={"require": ["sub", "role", "exp", "iat", "iss", "aud"]},
         )
     except PyJWTError as exc:
         raise TokenValidationError("Invalid or expired authentication token.") from exc
@@ -91,5 +99,11 @@ def decode_access_token(token: str) -> dict[str, Any]:
         payload["user_id"] = uuid.UUID(raw_sub)
     except (ValueError, TypeError) as exc:
         raise TokenValidationError("Token subject claim is not a valid UUID.") from exc
+
+    raw_role = payload.get("role")
+    try:
+        payload["role"] = UserRole(raw_role)
+    except ValueError as exc:
+        raise TokenValidationError("Token role claim is invalid.") from exc
 
     return payload

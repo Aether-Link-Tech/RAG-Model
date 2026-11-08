@@ -2,6 +2,7 @@
 and AL-127 PostgreSQL Row-Level Security (RLS) on `documents`.
 """
 from datetime import timedelta
+import base64
 import hashlib
 import io
 import os
@@ -28,6 +29,7 @@ from backend.app.db.rls import (
 from backend.app.models.document import Document
 from backend.app.models.user import User
 from backend.tests.conftest import TestingSessionLocal, purge_test_users
+from backend.app.services import captcha as captcha_service
 
 VALID_TXT_BYTES = b"Top-secret enterprise knowledge base document."
 
@@ -553,18 +555,32 @@ async def test_pooled_database_connection_reuse_does_not_leak_rls_context(
 
 @pytest.mark.asyncio
 async def test_admin_self_registration_attempt_forced_to_user_role(
-    async_client, test_user: User, db_session: AsyncSession
+    async_client, test_user: User, db_session: AsyncSession, sent_emails
 ):
     """Priority 1 / Priority 6 (#1, #2):
     Verify an unauthenticated caller attempting to register with `role='admin'` via
-    `POST /api/v1/users` always receives `role='user'` and cannot perform admin actions.
+    `POST /api/v1/auth/register` always receives `role='user'` and cannot perform admin actions.
+    Unauthenticated `POST /api/v1/users` is no longer possible at all (admin-only, FR-004).
     """
     email = f"attacker-{uuid.uuid4().hex[:8]}@example.com"
     password = "AttackerPassword123!"
 
-    reg_res = await async_client.post(
+    direct = await async_client.post(
         "/api/v1/users",
         json={"email": email, "password": password, "role": "admin"},
+    )
+    assert direct.status_code == 401
+
+    challenge = (await async_client.get("/api/v1/auth/captcha")).json()
+    reg_res = await async_client.post(
+        "/api/v1/auth/register",
+        json={
+            "full_name": "Attacker",
+            "email": email,
+            "password": password,
+            "role": "admin",
+            "captcha": captcha_service.solve_challenge(challenge),
+        },
     )
     assert reg_res.status_code == 201
     created_data = reg_res.json()
@@ -572,6 +588,11 @@ async def test_admin_self_registration_attempt_forced_to_user_role(
     assert created_data["role"] == "user"
 
     try:
+        verify = await async_client.post(
+            "/api/v1/auth/verify-email", json={"token": sent_emails[-1]["token"]}
+        )
+        assert verify.status_code == 200
+
         # Verify database record has role == 'user'
         db_user = await db_session.get(User, created_uid)
         assert db_user is not None
@@ -846,11 +867,37 @@ def test_security_configuration_rejects_insecure_production_settings():
             APP_DATABASE_URL=f"postgresql+asyncpg://rag_app:{DEFAULT_DEV_APP_DB_PASSWORD}@localhost:5432/rag_db",
         )
 
-    # 6. Valid production configuration -> accepted
+    # 6. Missing PII encryption keys in production -> rejected (FR-007)
+    with pytest.raises(ValueError, match="PII_ENCRYPTION_KEY"):
+        Settings(
+            ENV="production",
+            SECRET_KEY=strong_secret,
+            APP_DATABASE_URL=secure_app_db_url,
+            PII_ENCRYPTION_KEY="",
+            PII_INDEX_KEY="",
+        )
+
+    # 7. bcrypt cost below 12 in production -> rejected (FR-007)
+    pii_keys = {
+        "PII_ENCRYPTION_KEY": base64.b64encode(b"k" * 32).decode(),
+        "PII_INDEX_KEY": base64.b64encode(b"i" * 32).decode(),
+    }
+    with pytest.raises(ValueError, match="BCRYPT_ROUNDS"):
+        Settings(
+            ENV="production",
+            SECRET_KEY=strong_secret,
+            APP_DATABASE_URL=secure_app_db_url,
+            BCRYPT_ROUNDS=10,
+            **pii_keys,
+        )
+
+    # 8. Valid production configuration -> accepted
     prod_settings = Settings(
         ENV="production",
         SECRET_KEY=strong_secret,
         APP_DATABASE_URL=secure_app_db_url,
+        BCRYPT_ROUNDS=12,
+        **pii_keys,
     )
     assert prod_settings.ENV == "production"
     assert prod_settings.app_database_url == secure_app_db_url

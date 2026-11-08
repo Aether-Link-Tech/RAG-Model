@@ -11,8 +11,9 @@ import os
 import uuid
 import zipfile
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -20,8 +21,10 @@ from sqlalchemy.exc import IntegrityError
 from backend.app.api.deps import CurrentUser, DbSession
 from backend.app.core.config import settings
 from backend.app.core.roles import UserRole
+from backend.app.models.collection import Collection
 from backend.app.models.document import Document
-from backend.app.schemas.document import DocumentResponse, Visibility
+from backend.app.schemas.document import DocumentCollectionUpdate, DocumentResponse, Visibility
+from backend.app.services import audit_log
 from backend.app.services.clamav import (
     ClamAVUnavailableError,
     InfectedFileError,
@@ -40,13 +43,21 @@ from backend.app.services.vector_store import delete_document_chunks, rename_doc
 
 logger = logging.getLogger(__name__)
 
-async def log_security_event(user_id: str, filename: str, reason: str, ip: str):
-    """Non-blocking security audit logger. Never raises exceptions."""
-    try:
-        log_msg = f"[SECURITY AUDIT] User: {user_id} | File: {filename} | Reason: {reason} | IP: {ip}"
-        logger.warning(log_msg)
-    except Exception:
-        pass
+async def log_security_event(
+    user_id: str,
+    filename: str | None,
+    reason: str,
+    ip: str,
+    event_type: str = audit_log.UPLOAD_REJECTED,
+) -> None:
+    """Persist a security event to `security_audit_log` (FR-069). Never raises."""
+    await audit_log.record_security_event(
+        event_type=event_type,
+        user_id=user_id,
+        filename=filename,
+        reason=reason,
+        ip_address=None if ip == "unknown" else ip,
+    )
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -457,23 +468,72 @@ def _to_response(document: Document, caller_id: uuid.UUID) -> DocumentResponse:
     owned = document.user_id == caller_id
     response = DocumentResponse.model_validate(document)
     return response.model_copy(
-        update={"is_owner": owned, "user_id": document.user_id if owned else None}
+        update={
+            "is_owner": owned,
+            "user_id": document.user_id if owned else None,
+            # Collections are private to their owner (FR-012).
+            "collection_id": document.collection_id if owned else None,
+        }
     )
 
 
 @router.get("", response_model=list[DocumentResponse])
-async def list_documents(db: DbSession, current_user: CurrentUser) -> list[DocumentResponse]:
-    result = await db.execute(
-        select(Document)
-        .where(
-            or_(
-                Document.user_id == current_user.id,
-                Document.visibility == "public",
+async def list_documents(
+    db: DbSession,
+    current_user: CurrentUser,
+    collection: Annotated[
+        str | None,
+        Query(description="A collection id, or 'none' for your uncategorized documents (FR-012)."),
+    ] = None,
+) -> list[DocumentResponse]:
+    query = select(Document).where(
+        or_(
+            Document.user_id == current_user.id,
+            Document.visibility == "public",
+        )
+    )
+    if collection is not None:
+        # Collections only ever contain the caller's own documents.
+        query = query.where(Document.user_id == current_user.id)
+        if collection == "none":
+            query = query.where(Document.collection_id.is_(None))
+        else:
+            try:
+                query = query.where(Document.collection_id == uuid.UUID(collection))
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="collection must be a collection id or 'none'.",
+                ) from exc
+    result = await db.execute(query.order_by(Document.created_at.desc()))
+    return [_to_response(doc, current_user.id) for doc in result.scalars().all()]
+
+
+@router.put("/{document_id}/collection", response_model=DocumentResponse)
+async def move_document_to_collection(
+    document_id: uuid.UUID,
+    payload: DocumentCollectionUpdate,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> DocumentResponse:
+    """File one of your documents in one of your collections, or clear it (FR-012 / AL-149)."""
+    document = await _accessible_document(db, current_user.id, document_id)
+    if document.user_id != current_user.id:
+        # Collections are per user: other users cannot file a shared document.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if payload.collection_id is not None:
+        owned = await db.execute(
+            select(Collection.id).where(
+                Collection.id == payload.collection_id,
+                Collection.user_id == current_user.id,
             )
         )
-        .order_by(Document.created_at.desc())
-    )
-    return [_to_response(doc, current_user.id) for doc in result.scalars().all()]
+        if owned.scalar_one_or_none() is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    document.collection_id = payload.collection_id
+    await db.commit()
+    await db.refresh(document)
+    return _to_response(document, current_user.id)
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)
@@ -489,6 +549,7 @@ async def get_document(
 
 @router.get("/{document_id}/download")
 async def download_document(
+    request: Request,
     document_id: uuid.UUID,
     db: DbSession,
     current_user: CurrentUser,
@@ -504,6 +565,15 @@ async def download_document(
     stored_path = Path(document.file_path or "").resolve()
     if not stored_path.is_relative_to(upload_root) or not stored_path.is_file():
         # Missing file, or a stored path outside the upload area: never serve it.
+        reason = (
+            "Download blocked: stored path outside the upload area"
+            if not stored_path.is_relative_to(upload_root)
+            else "Download blocked: file missing from storage"
+        )
+        await log_security_event(
+            str(current_user.id), document.filename, reason,
+            request.client.host if request.client else "unknown", audit_log.DOWNLOAD_BLOCKED,
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found on storage server.",
@@ -538,14 +608,18 @@ async def update_document(
     revealed); another user's public document -> 403.
     """
     document = await _accessible_document(db, current_user.id, document_id)
+    client_ip = request.client.host if request.client else "unknown"
     if document.user_id != current_user.id:
         if document.visibility == "private":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        await log_security_event(
+            str(current_user.id), document.filename, "Update denied: not the owner", client_ip,
+            audit_log.ACCESS_DENIED,
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the owner can update this document.",
         )
-    client_ip = request.client.host if request.client else "unknown"
     # Captured up front: after a rollback ORM attributes expire and must not be
     # lazy-loaded inside the async error handlers.
     actor_id = current_user.id
@@ -597,7 +671,8 @@ async def update_document(
         await _validate_file_magic_bytes(file, suffix)
     except HTTPException as exc:
         await log_security_event(
-            str(current_user.id), replacement_name, f"Replacement rejected: {exc.detail}", client_ip
+            str(current_user.id), replacement_name, f"Replacement rejected: {exc.detail}", client_ip,
+            audit_log.REPLACE_REJECTED,
         )
         raise
     try:
@@ -607,11 +682,19 @@ async def update_document(
             max_bytes=settings.MAX_UPLOAD_BYTES,
         )
     except FileSizeLimitExceededError as exc:
+        await log_security_event(
+            str(actor_id), replacement_name, "Replacement exceeds the size limit", client_ip,
+            audit_log.REPLACE_REJECTED,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_max_size_message(),
         ) from exc
     if file_size == 0:
+        await log_security_event(
+            str(actor_id), replacement_name, "Replacement is empty (0 bytes)", client_ip,
+            audit_log.REPLACE_REJECTED,
+        )
         raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes).")
 
     duplicate_query = select(Document.id).where(
@@ -623,6 +706,10 @@ async def update_document(
         duplicate_query = duplicate_query.where(Document.user_id == current_user.id)
     existing = await db.execute(duplicate_query)
     if existing.scalar_one_or_none() is not None:
+        await log_security_event(
+            str(actor_id), replacement_name, f"Duplicate {document.visibility} document conflict",
+            client_ip, audit_log.REPLACE_REJECTED,
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=_duplicate_conflict_detail(
@@ -680,7 +767,8 @@ async def update_document(
         _best_effort_remove(str(temporary_path))
         await _safe_rollback(db)
         await log_security_event(
-            str(actor_id), replacement_name, f"Malware detected in replacement: {exc.signature}", client_ip
+            str(actor_id), replacement_name, f"Malware detected in replacement: {exc.signature}", client_ip,
+            audit_log.REPLACE_REJECTED,
         )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -723,6 +811,7 @@ async def update_document(
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
+    request: Request,
     document_id: uuid.UUID,
     db: DbSession,
     current_user: CurrentUser,
@@ -735,6 +824,10 @@ async def delete_document(
         and document.user_id != current_user.id
         and current_user.role != UserRole.ADMIN
     ):
+        await log_security_event(
+            str(current_user.id), document.filename, "Delete denied: not the owner or an admin",
+            request.client.host if request.client else "unknown", audit_log.ACCESS_DENIED,
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the original uploader or an admin can delete a public document.",

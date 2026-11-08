@@ -36,6 +36,7 @@ class Settings(BaseConfig):
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
+        "https://localhost",
     ]
 
     # Database:
@@ -68,9 +69,42 @@ class Settings(BaseConfig):
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", DEFAULT_DEV_SECRET_KEY)
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
     JWT_ISSUER: str = os.getenv("JWT_ISSUER", "aether-link-rag")
     JWT_AUDIENCE: str = os.getenv("JWT_AUDIENCE", "aether-link-rag-api")
+    REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
+    # Password hashing (FR-007): bcrypt cost factor, never below 12 outside tests.
+    BCRYPT_ROUNDS: int = int(os.getenv("BCRYPT_ROUNDS", "12"))
+
+    # PII encryption at rest (FR-007): AES-256-GCM key and a separate HMAC key for
+    # equality lookups (blind index). Base64-encoded 32-byte values. In local
+    # development they are derived from SECRET_KEY when unset; elsewhere they are required.
+    PII_ENCRYPTION_KEY: str = os.getenv("PII_ENCRYPTION_KEY", "")
+    PII_INDEX_KEY: str = os.getenv("PII_INDEX_KEY", "")
+
+    # Login protection (FR-002)
+    LOGIN_CAPTCHA_AFTER_FAILURES: int = int(os.getenv("LOGIN_CAPTCHA_AFTER_FAILURES", "3"))
+    LOGIN_MAX_FAILURES: int = int(os.getenv("LOGIN_MAX_FAILURES", "5"))
+    LOGIN_LOCKOUT_MINUTES: int = int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15"))
+
+    # Self-hosted proof-of-work captcha (FR-001 / FR-002)
+    CAPTCHA_MAX_NUMBER: int = int(os.getenv("CAPTCHA_MAX_NUMBER", "100000"))
+    CAPTCHA_TTL_SECONDS: int = int(os.getenv("CAPTCHA_TTL_SECONDS", "300"))
+
+    # Email verification (FR-001)
+    EMAIL_VERIFICATION_TTL_HOURS: int = int(os.getenv("EMAIL_VERIFICATION_TTL_HOURS", "24"))
+    FRONTEND_BASE_URL: str = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "localhost")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "1025"))
+    SMTP_USERNAME: str = os.getenv("SMTP_USERNAME", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    SMTP_STARTTLS: bool = os.getenv("SMTP_STARTTLS", "False").lower() in ("true", "1")
+    SMTP_FROM: str = os.getenv("SMTP_FROM", "Aether Link <no-reply@aether-link.local>")
+    SMTP_TIMEOUT_SECONDS: int = int(os.getenv("SMTP_TIMEOUT_SECONDS", "8"))
+
+    # Security audit log (FR-069)
+    AUDIT_LOG_RETENTION_DAYS: int = int(os.getenv("AUDIT_LOG_RETENTION_DAYS", "90"))
 
     # Uploads
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads")
@@ -136,6 +170,13 @@ class Settings(BaseConfig):
                 raise ValueError(
                     "Invalid APP_DATABASE_URL password for non-development environment: "
                     "must not use an empty or default development password."
+                )
+            if self.BCRYPT_ROUNDS < 12:
+                raise ValueError("BCRYPT_ROUNDS must be at least 12 outside development.")
+            if not self.PII_ENCRYPTION_KEY.strip() or not self.PII_INDEX_KEY.strip():
+                raise ValueError(
+                    "PII_ENCRYPTION_KEY and PII_INDEX_KEY must be set outside development "
+                    "(base64-encoded 32 random bytes each)."
                 )
 
     def model_post_init(self, __context: Any) -> None:

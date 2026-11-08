@@ -192,20 +192,3 @@ async def test_role_update_validation(async_client, test_user: User, admin_user:
     )
     assert missing.status_code == 404
 
-
-@pytest.mark.asyncio
-async def test_collections_create_requires_admin(async_client, test_user: User, admin_user: User):
-    assert (await async_client.get("/api/v1/collections/")).status_code == 401
-    assert (
-        await async_client.get("/api/v1/collections/", headers=_bearer(test_user.id, test_user.role))
-    ).status_code == 200
-
-    as_user = await async_client.post(
-        "/api/v1/collections/", params={"name": "x"}, headers=_bearer(test_user.id, test_user.role)
-    )
-    assert as_user.status_code == 403
-
-    as_admin = await async_client.post(
-        "/api/v1/collections/", params={"name": "x"}, headers=_bearer(admin_user.id, admin_user.role)
-    )
-    assert as_admin.status_code == 200

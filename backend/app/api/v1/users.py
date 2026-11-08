@@ -8,7 +8,8 @@ from sqlalchemy.exc import IntegrityError
 from backend.app.api.deps import AdminUser, CurrentUser, DbSession
 from backend.app.core.roles import UserRole
 from backend.app.core.security import hash_password
-from backend.app.models.user import User
+from backend.app.models.user import User, UserStatus
+from backend.app.schemas.auth import validate_email_format, validate_password_strength
 from backend.app.schemas.user import UserCreate, UserResponse, UserRoleUpdate
 from backend.app.services.vector_store import delete_user_private_knowledge
 
@@ -38,11 +39,22 @@ async def _soft_delete_user(db: DbSession, target_user: User) -> User:
 
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def create_user(payload: UserCreate, db: DbSession) -> User:
+async def create_user(payload: UserCreate, _admin: AdminUser, db: DbSession) -> User:
+    """Admin-only: create an already-active account (FR-004).
+
+    Self-service sign-up goes through POST /auth/register (captcha + email verification).
+    """
+    try:
+        email = validate_email_format(payload.email)
+        validate_password_strength(payload.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     user = User(
-        email=payload.email.lower().strip(),
+        email=email,
+        full_name=payload.full_name,
         hashed_password=hash_password(payload.password),
-        role=UserRole.USER.value,
+        role=payload.role.value,
+        status=UserStatus.ACTIVE,
     )
     db.add(user)
     try:

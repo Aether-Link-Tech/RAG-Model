@@ -86,6 +86,50 @@ def parser_sandbox_mode(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def fake_redis():
+    """In-memory Redis per test (token blacklist, login lockout, captcha replay)."""
+    import fakeredis
+
+    from backend.app.core.redis import set_redis_client
+
+    client = fakeredis.FakeAsyncRedis(decode_responses=True)
+    set_redis_client(client)
+    yield client
+    set_redis_client(None)
+
+
+@pytest.fixture(autouse=True)
+def fast_security_settings(monkeypatch):
+    """Cheaper bcrypt and captcha work in tests; production keeps cost 12 / 100k."""
+    monkeypatch.setattr(settings, "BCRYPT_ROUNDS", 4)
+    monkeypatch.setattr(settings, "CAPTCHA_MAX_NUMBER", 2000)
+
+
+@pytest.fixture(autouse=True)
+def audit_log_sessions():
+    """Audit rows are written in their own session; point it at the test engine."""
+    from backend.app.services import audit_log
+
+    audit_log.set_audit_session_factory(TestingSessionLocal)
+    yield
+    audit_log.set_audit_session_factory(None)
+
+
+@pytest.fixture(autouse=True)
+def sent_emails(monkeypatch):
+    """Capture verification emails instead of talking to SMTP."""
+    from backend.app.api.v1 import auth as auth_api
+
+    outbox: list[dict] = []
+
+    async def _capture(to_email, full_name, token):
+        outbox.append({"to": to_email, "full_name": full_name, "token": token})
+
+    monkeypatch.setattr(auth_api, "send_verification_email", _capture)
+    return outbox
+
+
+@pytest.fixture(autouse=True)
 def isolate_storage(tmp_path, monkeypatch):
     """Isolate file storage per test using a temporary directory."""
     test_storage = tmp_path / "test_uploads"
@@ -257,3 +301,26 @@ async def async_client() -> AsyncGenerator[httpx.AsyncClient, None]:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest_asyncio.fixture
+async def admin_user(db_session: AsyncSession) -> AsyncGenerator[User, None]:
+    """An active admin account (FR-004)."""
+    user_id = uuid.uuid4()
+    user = User(
+        id=user_id,
+        email=f"admin-{user_id.hex[:8]}@example.com",
+        hashed_password="admin_hashed_password",
+        role="admin",
+        is_deleted=False,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    yield user
+    await purge_test_users(user_id)
+
+
+def bearer(user: User) -> dict[str, str]:
+    from backend.app.core.security import create_access_token
+
+    return {"Authorization": f"Bearer {create_access_token(user.id, role=user.role)}"}

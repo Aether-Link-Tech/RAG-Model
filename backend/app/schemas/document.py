@@ -29,8 +29,16 @@ class DocumentResponse(DocumentBase):
     file_hash: str
     status: str
     visibility: Visibility
+    # The owner's collection (FR-012); always None for documents owned by someone else.
+    collection_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DocumentCollectionUpdate(BaseModel):
+    """Move a document into one of the caller's collections; null = Uncategorized."""
+
+    collection_id: Optional[uuid.UUID] = None

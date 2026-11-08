@@ -1,7 +1,7 @@
 // Register page (/signup) — AL-119
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Lock, Mail, MailCheck, User, UserPlus } from 'lucide-react';
+import { ArrowRight, Check, CircleCheckBig, Lock, Mail, User, UserPlus } from 'lucide-react';
 import InputField from '../components/InputField';
 import RobotCheck from '../components/RobotCheck';
 import Button from '../components/Button';
@@ -22,6 +22,14 @@ function passwordStrength(password: string): number {
 
 const strengthLabels = ['Too short', 'Weak', 'Fair', 'Good', 'Strong'];
 
+// FR-001 password rules: 8+ chars, upper, lower, digit, special
+export const PASSWORD_RULES: { label: string; test: (p: string) => boolean }[] = [
+  { label: `${PASSWORD_MIN}+ characters`, test: (p) => p.length >= PASSWORD_MIN },
+  { label: 'Upper & lower case', test: (p) => /[A-Z]/.test(p) && /[a-z]/.test(p) },
+  { label: 'A number', test: (p) => /\d/.test(p) },
+  { label: 'A special character', test: (p) => /[^A-Za-z0-9]/.test(p) },
+];
+
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface SignupForm {
@@ -32,7 +40,7 @@ interface SignupForm {
 }
 
 // Returns the first validation error, or '' when valid. Limits match backend UserCreate.
-function validate(form: SignupForm, isHuman: boolean): string {
+export function validate(form: SignupForm, isHuman: boolean): string {
   const email = form.email.trim();
 
   if (!form.fullName.trim()) return 'Please enter your full name.';
@@ -45,6 +53,8 @@ function validate(form: SignupForm, isHuman: boolean): string {
 
   if (form.password.length < PASSWORD_MIN) return `Password must be at least ${PASSWORD_MIN} characters.`;
   if (form.password.length > PASSWORD_MAX) return `Password must be at most ${PASSWORD_MAX} characters.`;
+  const missing = PASSWORD_RULES.filter((rule) => !rule.test(form.password));
+  if (missing.length) return `Password needs: ${missing.map((r) => r.label.toLowerCase()).join(', ')}.`;
   if (form.password !== form.confirm) return 'Passwords do not match. Please enter them again.';
 
   if (!isHuman) return 'Please confirm that you are not a robot.';
@@ -73,7 +83,7 @@ export default function SignupPage() {
 
     setLoading(true);
     try {
-      // Backend accepts only email + password (full name is not stored yet)
+      // TODO(FR-001): send fullName once the backend stores it; today only email + password are accepted.
       await signup(form.email.trim(), form.password);
       setRegisteredEmail(form.email.trim());
     } catch (err) {
@@ -91,11 +101,11 @@ export default function SignupPage() {
     return (
       <div className="signup-success">
         <span className="signup-success__icon">
-          <MailCheck size={30} />
+          <CircleCheckBig size={30} />
         </span>
-        <h2>Check your email</h2>
+        <h2>Account created</h2>
         <p className="auth-card__subtitle">
-          Your account was created. We sent a confirmation link to <strong>{registeredEmail}</strong>.
+          <strong>{registeredEmail}</strong> is ready. You can sign in now.
         </p>
         <Link to="/login" className="button button--primary button--wide">
           Go to sign in <ArrowRight size={18} className="button__arrow" />
@@ -169,6 +179,19 @@ export default function SignupPage() {
             </div>
             <small>{strengthLabels[strength]}</small>
           </div>
+        )}
+
+        {form.password && (
+          <ul className="password-rules" aria-label="Password requirements">
+            {PASSWORD_RULES.map((rule) => {
+              const ok = rule.test(form.password);
+              return (
+                <li key={rule.label} className={ok ? 'is-met' : ''}>
+                  <Check size={12} /> {rule.label}
+                </li>
+              );
+            })}
+          </ul>
         )}
 
         <div className="form-options">

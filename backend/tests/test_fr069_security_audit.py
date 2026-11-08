@@ -356,7 +356,7 @@ async def test_forced_db_failure_in_audit_service_does_not_alter_http_response(
 
     monkeypatch.setattr(
         security_audit,
-        "AuditSessionLocal",
+        "AsyncSessionLocal",
         lambda: _BrokenSessionContext(),
     )
 

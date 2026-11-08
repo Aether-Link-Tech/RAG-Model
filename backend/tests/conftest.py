@@ -147,6 +147,13 @@ def stub_clamav_scan(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolate_security_audit_session(monkeypatch):
+    """Ensure out-of-band audit writes use a NullPool session during tests."""
+    from backend.app.services import security_audit
+    monkeypatch.setattr(security_audit, "AsyncSessionLocal", TestingSessionLocal)
+
+
+@pytest.fixture(autouse=True)
 def override_db_dependency():
     """Ensure every FastAPI request gets a fresh AsyncSession with NullPool."""
     async def _test_get_db() -> AsyncGenerator[AsyncSession, None]:

@@ -10,8 +10,19 @@ class EmbeddingError(RuntimeError):
 
 
 async def embed_texts(texts: Sequence[str]) -> list[list[float]]:
+    """Embed texts with Ollama. Network failures surface as EmbeddingError, so the
+    caller marks the document `failed` instead of returning a 500."""
     if not texts:
         return []
+    try:
+        return await _embed_texts(texts)
+    except httpx.HTTPError as exc:
+        raise EmbeddingError(
+            "The embedding service is unavailable. Re-upload or replace the file to retry."
+        ) from exc
+
+
+async def _embed_texts(texts: Sequence[str]) -> list[list[float]]:
 
     payload_texts = list(texts)
     async with httpx.AsyncClient(timeout=60.0) as client:

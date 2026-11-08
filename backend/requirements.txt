@@ -15,6 +15,7 @@ greenlet>=3.0.0
 # Auth
 PyJWT>=2.8.0
 bcrypt>=4.1.0
+cryptography>=42.0
 python-magic>=0.4.27
 
 # Jobs

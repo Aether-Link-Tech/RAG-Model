@@ -605,7 +605,7 @@ async def update_document(
     except HTTPException as exc:
         await log_security_event(
             str(current_user.id),
-            filename or (file.filename if file else None) or str(document_id),
+            str(document_id),
             f"Unauthorized document update attempt: {exc.detail}",
             client_ip,
         )
@@ -614,7 +614,7 @@ async def update_document(
         if document.visibility == "private":
             await log_security_event(
                 str(current_user.id),
-                document.filename,
+                str(document.id),
                 "Unauthorized private document update attempt",
                 client_ip,
             )
@@ -886,7 +886,7 @@ async def delete_document(
     if document.visibility == "private" and document.user_id != current_user.id:
         await log_security_event(
             str(current_user.id),
-            document.filename,
+            str(document.id),
             "Unauthorized private document delete attempt",
             client_ip,
         )

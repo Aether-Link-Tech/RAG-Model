@@ -174,6 +174,79 @@ async def test_delete_document_ownership_denial_writes_audit_row(
     assert rows[0].ip_address == "127.0.0.1"
 
 
+# --- 4b. Denial on another user's PRIVATE document stores document ID instead of filename ---
+
+
+@pytest.mark.asyncio
+async def test_delete_another_user_private_document_denial_records_document_id(
+    async_client, test_user: User, test_user_2: User
+):
+    """User B attempts to delete User A's private document: audit row must store
+
+    document ID as filename to avoid leaking private document names (AL-99).
+    """
+    secret_filename = "classified_financial_records.pdf"
+    priv_res = await async_client.post(
+        "/api/v1/documents",
+        headers=_headers(test_user),
+        data={"visibility": "private"},
+        files={"file": (secret_filename, io.BytesIO(b"%PDF-1.4 sample"), "application/pdf")},
+    )
+    assert priv_res.status_code == 201
+    priv_doc_id = priv_res.json()["id"]
+
+    # test_user_2 attempts to delete test_user's private doc -> 404
+    del_res = await async_client.delete(
+        f"/api/v1/documents/{priv_doc_id}",
+        headers=_headers(test_user_2),
+    )
+    assert del_res.status_code == 404
+
+    rows = await _fetch_audit_rows_for_user(test_user_2.id)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.user_id == test_user_2.id
+    assert row.filename == str(priv_doc_id)
+    assert secret_filename not in (row.filename or "")
+    assert secret_filename not in (row.reason or "")
+    assert "Unauthorized" in row.reason
+    assert row.ip_address == "127.0.0.1"
+
+
+# --- 4c. Non-owner denial on a PUBLIC document retains the real filename ---
+
+
+@pytest.mark.asyncio
+async def test_delete_another_user_public_document_denial_retains_real_filename(
+    async_client, test_user: User, test_user_2: User
+):
+    """User B attempts to delete User A's public document: audit row keeps real filename."""
+    public_filename = "public_terms_of_service.txt"
+    pub_res = await async_client.post(
+        "/api/v1/documents",
+        headers=_headers(test_user),
+        data={"visibility": "public"},
+        files={"file": (public_filename, io.BytesIO(VALID_TXT_BYTES), "text/plain")},
+    )
+    assert pub_res.status_code == 201
+    pub_doc_id = pub_res.json()["id"]
+
+    # test_user_2 attempts to delete test_user's public doc -> 403
+    del_res = await async_client.delete(
+        f"/api/v1/documents/{pub_doc_id}",
+        headers=_headers(test_user_2),
+    )
+    assert del_res.status_code == 403
+
+    rows = await _fetch_audit_rows_for_user(test_user_2.id)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.user_id == test_user_2.id
+    assert row.filename == public_filename
+    assert row.reason == "Unauthorized public document delete attempt"
+    assert row.ip_address == "127.0.0.1"
+
+
 # --- 5. Path-escape attempt in download_document writes an audit row ---------
 
 

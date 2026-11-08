@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import String, Boolean, DateTime, CheckConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from backend.app.core.roles import UserRole
 from backend.app.db.base import Base
 
 if TYPE_CHECKING:
@@ -27,9 +28,20 @@ class User(Base):
         String(255),
         nullable=False
     )
+    full_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True
+    )
+    # FR-001: self-registered accounts stay pending until the email is verified.
+    is_verified: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False
+    )
     role: Mapped[str] = mapped_column(
         String(20),
-        default="user",
+        default=UserRole.USER.value,
         nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -53,6 +65,14 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("role IN ('admin', 'user')", name="check_user_role"),
     )
+
+    @property
+    def account_status(self) -> str:
+        return "active" if self.is_verified else "pending_verification"
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == UserRole.ADMIN
 
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email} role={self.role}>"

@@ -25,9 +25,22 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      clamav:
+        image: clamav/clamav:1.4
+        ports:
+          - 3310:3310
+        options: >-
+          --health-cmd "clamdscan --ping=1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-start-period 60s
+          --health-retries 12
+
     env:
       CI: "true"
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/rag_db
+      CLAMAV_HOST: localhost
+      CLAMAV_PORT: "3310"
       DEBUG: "false"
 
     steps:

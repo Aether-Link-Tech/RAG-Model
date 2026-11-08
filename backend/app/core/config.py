@@ -71,10 +71,45 @@ class Settings(BaseConfig):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
     JWT_ISSUER: str = os.getenv("JWT_ISSUER", "aether-link-rag")
     JWT_AUDIENCE: str = os.getenv("JWT_AUDIENCE", "aether-link-rag-api")
+    REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+    # bcrypt work factor (AL-116 / AL-135). Values below 12 are rejected at startup.
+    BCRYPT_ROUNDS: int = int(os.getenv("BCRYPT_ROUNDS", "12"))
+
+    # Login lockout (FR-002 / AL-121)
+    LOGIN_CAPTCHA_AFTER_FAILURES: int = int(os.getenv("LOGIN_CAPTCHA_AFTER_FAILURES", "3"))
+    LOGIN_MAX_FAILED_ATTEMPTS: int = int(os.getenv("LOGIN_MAX_FAILED_ATTEMPTS", "5"))
+    LOGIN_LOCKOUT_MINUTES: int = int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15"))
+
+    # Google reCAPTCHA v2 (FR-001 / AL-118)
+    RECAPTCHA_ENABLED: bool = os.getenv("RECAPTCHA_ENABLED", "True").lower() in ("true", "1")
+    RECAPTCHA_SECRET_KEY: str = os.getenv("RECAPTCHA_SECRET_KEY", "")
+    RECAPTCHA_VERIFY_URL: str = os.getenv(
+        "RECAPTCHA_VERIFY_URL", "https://www.google.com/recaptcha/api/siteverify"
+    )
+
+    # Email verification (FR-001 / AL-117). With no SMTP_HOST in a local/dev
+    # environment, the verification link is written to the log instead.
+    EMAIL_VERIFICATION_EXPIRE_HOURS: int = int(os.getenv("EMAIL_VERIFICATION_EXPIRE_HOURS", "24"))
+    EMAIL_VERIFICATION_URL: str = os.getenv(
+        "EMAIL_VERIFICATION_URL", "http://localhost:3000/verify-email"
+    )
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USERNAME: str = os.getenv("SMTP_USERNAME", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM: str = os.getenv("SMTP_FROM", "no-reply@aether-link.local")
+    SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "True").lower() in ("true", "1")
+    SMTP_TIMEOUT_SECONDS: int = int(os.getenv("SMTP_TIMEOUT_SECONDS", "8"))
 
     # Uploads
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads")
     MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+    CLAMAV_HOST: str = os.getenv("CLAMAV_HOST", "localhost")
+    CLAMAV_PORT: int = int(os.getenv("CLAMAV_PORT", "3310"))
+    CLAMAV_TIMEOUT_SECONDS: int = int(os.getenv("CLAMAV_TIMEOUT_SECONDS", "25"))
+    CLAMAV_QUARANTINE_DIR: str = os.getenv(
+        "CLAMAV_QUARANTINE_DIR", "quarantine"
+    )
     CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "1000"))
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "200"))
 
@@ -109,8 +144,12 @@ class Settings(BaseConfig):
         if not secret:
             raise ValueError("SECRET_KEY must not be empty.")
 
+        if self.BCRYPT_ROUNDS < 12:
+            raise ValueError("BCRYPT_ROUNDS must be at least 12.")
+
         env_normalized = (self.ENV or "").lower().strip()
         if env_normalized not in LOCAL_DEV_ENVIRONMENTS:
+
             if secret in INSECURE_SECRET_KEYS or len(secret) < MIN_SECRET_KEY_LENGTH:
                 raise ValueError(
                     "Invalid SECRET_KEY for non-development environment: must be at least "
@@ -128,6 +167,13 @@ class Settings(BaseConfig):
                     "Invalid APP_DATABASE_URL password for non-development environment: "
                     "must not use an empty or default development password."
                 )
+            if self.RECAPTCHA_ENABLED and not self.RECAPTCHA_SECRET_KEY.strip():
+                raise ValueError(
+                    "RECAPTCHA_SECRET_KEY is required when RECAPTCHA_ENABLED is true "
+                    "outside development."
+                )
+            if not self.SMTP_HOST.strip():
+                raise ValueError("SMTP_HOST is required outside development.")
 
     def model_post_init(self, __context: Any) -> None:
         self.validate_security_settings()

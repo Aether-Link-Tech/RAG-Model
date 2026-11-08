@@ -495,7 +495,7 @@ async def test_validation_rejects_empty_unsupported_and_spoofed_files(
         files={"file": ("fake.pdf", io.BytesIO(b"Not a real PDF header"), "application/pdf")},
     )
     assert r_spoof.status_code == 400
-    assert "signature" in r_spoof.json()["detail"].lower()
+    assert "does not match" in r_spoof.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
@@ -598,3 +598,58 @@ async def test_unrelated_integrity_error_returns_400_not_409(
     assert response.status_code == 400
     assert "integrity constraint" in response.json()["detail"].lower()
     assert _list_all_files(settings.UPLOAD_DIR) == []
+@pytest.mark.asyncio
+async def test_download_document_success(
+    async_client, test_user: User, db_session: AsyncSession
+):
+    """Verify that an owner can successfully download their private document."""
+    # 1. First upload a document to get a valid document ID
+    files = {"file": ("download_test.txt", io.BytesIO(VALID_TXT_BYTES), "text/plain")}
+    response = await async_client.post(
+        "/api/v1/documents",
+        headers=_auth_headers(test_user),
+        files=files,
+    )
+    assert response.status_code == 201
+    doc_id = response.json()["id"]
+
+    # 2. Request download for the created document
+    download_response = await async_client.get(
+        f"/api/v1/documents/{doc_id}/download",
+        headers=_auth_headers(test_user),
+    )
+    assert download_response.status_code == 200
+    assert download_response.content == VALID_TXT_BYTES
+    assert "attachment" in download_response.headers.get("content-disposition", "")
+
+
+@pytest.mark.asyncio
+async def test_download_document_not_found(async_client, test_user: User):
+    """Verify downloading a non-existent document ID returns HTTP 404."""
+    fake_id = uuid.uuid4()
+    response = await async_client.get(
+        f"/api/v1/documents/{fake_id}/download",
+        headers=_auth_headers(test_user),
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_download_document_unauthorized(async_client, test_user: User, test_user_2: User):
+    """Verify a user cannot download another user's private document without permission."""
+    # User 1 uploads a private document
+    files = {"file": ("private_secret.txt", io.BytesIO(VALID_TXT_BYTES), "text/plain")}
+    res = await async_client.post(
+        "/api/v1/documents",
+        headers=_auth_headers(test_user),
+        files=files,
+    )
+    assert res.status_code == 201
+    doc_id = res.json()["id"]
+
+    # User 2 attempts to download User 1's private document -> should be forbidden/not found
+    response = await async_client.get(
+        f"/api/v1/documents/{doc_id}/download",
+        headers=_auth_headers(test_user_2),
+    )
+    assert response.status_code in (403, 404)

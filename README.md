@@ -27,7 +27,7 @@ The **Enterprise RAG Model Platform** is a privacy-first, fully offline-capable 
 
 ```text
 RAG-Model/
-├── docker-compose.yml             # Postgres 17, Redis 7, ChromaDB
+├── docker-compose.yml             # Postgres 17, Redis 7, ChromaDB, ClamAV
 ├── .env / .env.example            # Environment variables & secrets
 ├── .gitignore                     # Git ignore rules (includes backend/.venv/)
 │
@@ -244,7 +244,10 @@ cp .env.example .env
 
 ### 2. Start Infrastructure Services (Docker)
 
-PostgreSQL 17, Redis 7, and ChromaDB run in isolated Docker containers:
+PostgreSQL 17, Redis 7, ChromaDB, and ClamAV run in Docker containers. ClamAV's
+daemon is available to the local API on `localhost:3310`; its official image
+runs the signature updater daily. Uploads fail closed if the scanner is
+unavailable, and detections are moved to the configured quarantine directory.
 
 ```bash
 # Start all infrastructure containers in background
@@ -494,6 +497,10 @@ If port 5432 conflicts with a local PostgreSQL installation, adjust `POSTGRES_PO
 | `REDIS_URL`       | `redis://localhost:6379/0`                                     | Redis caching & broker URL       |
 | `CHROMA_HOST`     | `localhost`                                                    | ChromaDB host                    |
 | `CHROMA_PORT`     | `8001`                                                         | ChromaDB external port           |
+| `CLAMAV_HOST`     | `localhost`                                                    | ClamAV daemon host               |
+| `CLAMAV_PORT`     | `3310`                                                         | ClamAV daemon port               |
+| `CLAMAV_TIMEOUT_SECONDS` | `25`                                                   | Maximum time for a scan request  |
+| `CLAMAV_QUARANTINE_DIR` | `quarantine`                                                 | Directory for detected files    |
 | `OLLAMA_BASE_URL` | `http://localhost:11434`                                       | Ollama local endpoint            |
 | `LLM_MODEL`       | `qwen3:4b`                                                     | Active LLM for inference         |
 | `EMBEDDING_MODEL` | `nomic-embed-text`                                             | Active embedding model           |

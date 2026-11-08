@@ -18,7 +18,9 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.api.deps import CurrentUser, DbSession
+from backend.app.api.v1.collections import get_owned_collection
 from backend.app.core.config import settings
+from backend.app.core.roles import UserRole
 from backend.app.models.document import Document
 from backend.app.schemas.document import DocumentResponse, Visibility
 from backend.app.services.clamav import (
@@ -256,11 +258,13 @@ async def upload_document(
     current_user: CurrentUser,
     file: UploadFile = File(...),
     visibility: Visibility = Form("private"),
+    collection_id: str | None = Form(default=None),
 ) -> DocumentResponse:
     """Upload a document with streaming SHA-256 hashing and scoped duplicate detection."""
     client_ip = request.client.host if request.client else "unknown"
     user_id_str = str(current_user.id)
     filename_str = file.filename or "unknown"
+    _, target_collection_id = await _resolve_collection_field(db, current_user.id, collection_id)
 
     if visibility not in ("private", "public"):
         await log_security_event(user_id_str, filename_str, "Invalid visibility parameter", client_ip)
@@ -386,6 +390,7 @@ async def upload_document(
             file_hash=file_hash,
             status="pending",
             visibility=visibility,
+            collection_id=target_collection_id,
         )
         db.add(document)
         await db.commit()
@@ -456,22 +461,64 @@ def _to_response(document: Document, caller_id: uuid.UUID) -> DocumentResponse:
     owned = document.user_id == caller_id
     response = DocumentResponse.model_validate(document)
     return response.model_copy(
-        update={"is_owner": owned, "user_id": document.user_id if owned else None}
+        update={
+            "is_owner": owned,
+            "user_id": document.user_id if owned else None,
+            # Collections are private to their owner.
+            "collection_id": document.collection_id if owned else None,
+        }
     )
+
+
+_UNCATEGORIZED_VALUES = {"", "none", "null", "uncategorized"}
+
+
+async def _resolve_collection_field(
+    db: DbSession, owner_id: uuid.UUID, raw: str | None
+) -> tuple[bool, uuid.UUID | None]:
+    """Parse a `collection_id` form/query value (FR-012).
+
+    Returns (provided, collection_id). An empty value or "uncategorized" means
+    "no collection". A collection that is not the caller's is 404, like any
+    other resource the caller cannot see.
+    """
+    if raw is None:
+        return False, None
+    value = raw.strip()
+    if value.lower() in _UNCATEGORIZED_VALUES:
+        return True, None
+    try:
+        collection_id = uuid.UUID(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="collection_id must be a UUID or 'uncategorized'.",
+        ) from exc
+    collection = await get_owned_collection(db, owner_id, collection_id)
+    return True, collection.id
 
 
 @router.get("", response_model=list[DocumentResponse])
-async def list_documents(db: DbSession, current_user: CurrentUser) -> list[DocumentResponse]:
-    result = await db.execute(
-        select(Document)
-        .where(
-            or_(
-                Document.user_id == current_user.id,
-                Document.visibility == "public",
-            )
+async def list_documents(
+    db: DbSession,
+    current_user: CurrentUser,
+    collection_id: str | None = None,
+) -> list[DocumentResponse]:
+    """List own and public documents. With `collection_id` (a UUID or
+    "uncategorized"), list only the caller's own documents in that collection."""
+    query = select(Document).where(
+        or_(
+            Document.user_id == current_user.id,
+            Document.visibility == "public",
         )
-        .order_by(Document.created_at.desc())
     )
+    if collection_id is not None:
+        _, target = await _resolve_collection_field(db, current_user.id, collection_id)
+        query = query.where(
+            Document.user_id == current_user.id,
+            Document.collection_id.is_(None) if target is None else Document.collection_id == target,
+        )
+    result = await db.execute(query.order_by(Document.created_at.desc()))
     return [_to_response(doc, current_user.id) for doc in result.scalars().all()]
 
 
@@ -543,8 +590,11 @@ async def update_document(
     background_tasks: BackgroundTasks,
     file: UploadFile | None = File(default=None),
     filename: str | None = Form(default=None),
+    collection_id: str | None = Form(default=None),
 ) -> DocumentResponse:
-    """Rename a document or replace its contents and queue a fresh index.
+    """Rename a document, move it to another collection, or replace its contents
+    and queue a fresh index. `collection_id` may be a UUID of one of the caller's
+    collections, or empty / "uncategorized" to take it out of its collection.
 
     Only the owner may update. Another user's private document -> 404 (never
     revealed); another user's public document -> 403.
@@ -584,11 +634,14 @@ async def update_document(
     actor_id = current_user.id
     actor_role = current_user.role
     doc_id = document.id
-    if file is None and filename is None:
+    if file is None and filename is None and collection_id is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provide a new filename, a replacement file, or both.",
+            detail="Provide a new filename, a replacement file, or a collection_id.",
         )
+    move_collection, target_collection_id = await _resolve_collection_field(
+        db, actor_id, collection_id
+    )
 
     if filename is not None:
         filename = Path(filename).name.strip()
@@ -604,7 +657,13 @@ async def update_document(
             )
 
     if file is None:
-        document.filename = filename or document.filename
+        if move_collection:
+            document.collection_id = target_collection_id
+        if filename is None:
+            await db.commit()
+            await db.refresh(document)
+            return _to_response(document, current_user.id)
+        document.filename = filename
         await db.commit()
         try:
             rename_document_chunks(
@@ -709,6 +768,8 @@ async def update_document(
         document.file_hash = file_hash
         document.status = "processing"
         document.error_message = None
+        if move_collection:
+            document.collection_id = target_collection_id
         await db.commit()
     except FileSizeLimitExceededError as exc:
         _best_effort_remove(str(temporary_path))
@@ -833,7 +894,7 @@ async def delete_document(
     if (
         document.visibility == "public"
         and document.user_id != current_user.id
-        and current_user.role != "admin"
+        and current_user.role != UserRole.ADMIN
     ):
         await log_security_event(
             str(current_user.id),

@@ -7,8 +7,9 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, SessionTransaction
 
+from backend.app.core.roles import VALID_USER_ROLES
+
 RLS_DB_ROLE = "rag_app"
-VALID_USER_ROLES = {"user", "admin"}
 
 
 def _normalize_rls_identity(user_id: uuid.UUID | str, user_role: str = "user") -> tuple[str, str]:
@@ -22,7 +23,7 @@ def _normalize_rls_identity(user_id: uuid.UUID | str, user_role: str = "user") -
     if user_role not in VALID_USER_ROLES:
         raise ValueError(f"Invalid user_role: {user_role!r}")
 
-    return normalized_uid, user_role
+    return normalized_uid, str(user_role)
 
 
 def _apply_rls_on_sync_connection(

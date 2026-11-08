@@ -194,21 +194,13 @@ async def test_role_update_validation(async_client, test_user: User, admin_user:
 
 
 @pytest.mark.asyncio
-async def test_collections_create_requires_admin(async_client, test_user: User, admin_user: User):
-    assert (await async_client.get("/api/v1/collections/")).status_code == 401
-    assert (
-        await async_client.get("/api/v1/collections/", headers=_bearer(test_user.id, test_user.role))
-    ).status_code == 200
-
-    as_user = await async_client.post(
-        "/api/v1/collections/", params={"name": "x"}, headers=_bearer(test_user.id, test_user.role)
+async def test_collections_are_open_to_every_signed_in_user(async_client, test_user: User):
+    """FR-012: collections are per-user, so any authenticated user may create one."""
+    assert (await async_client.get("/api/v1/collections")).status_code == 401
+    res = await async_client.post(
+        "/api/v1/collections", json={"name": "Mine"}, headers=_bearer(test_user.id, test_user.role)
     )
-    assert as_user.status_code == 403
-
-    as_admin = await async_client.post(
-        "/api/v1/collections/", params={"name": "x"}, headers=_bearer(admin_user.id, admin_user.role)
-    )
-    assert as_admin.status_code == 200
+    assert res.status_code == 201
 
 
 # --- AL-123: roles + user_roles tables -------------------------------------------

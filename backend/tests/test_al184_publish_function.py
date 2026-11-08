@@ -96,12 +96,13 @@ async def test_owner_publishes_indexed_private_document(
 
 
 @pytest.mark.asyncio
-async def test_admin_publishes_another_users_private_document(
+async def test_admin_publishing_another_users_private_document_is_rejected(
     test_user: User, db_session: AsyncSession
 ):
-    """2. Admin (app.user_role='admin') publishes another user's private document ->
-    succeeds, owner user_id is preserved.
+    """2. Admin (app.user_role='admin') calling publish_document on another
+    user's private document raises SQLSTATE 42501, private row remains unchanged.
     """
+    owner_id = test_user.id
     admin_id = uuid.uuid4()
     admin = User(
         id=admin_id,
@@ -115,34 +116,30 @@ async def test_admin_publishes_another_users_private_document(
 
     try:
         orig_doc = await _create_doc(
-            db_session, test_user.id, visibility="private", status="indexed"
+            db_session, owner_id, visibility="private", status="indexed"
         )
         old_id = orig_doc.id
         new_id = uuid.uuid4()
         new_path = f"/tmp/public/{new_id}_admin_published.txt"
 
         await configure_rls_context(db_session, admin_id, "admin")
-        row = (
+        with pytest.raises(DBAPIError, match="not permitted") as exc_info:
             await db_session.execute(
                 text(
                     "SELECT * FROM publish_document(:doc_id, :new_id, :new_path)"
                 ),
                 {"doc_id": old_id, "new_id": new_id, "new_path": new_path},
             )
-        ).mappings().one()
-        await db_session.commit()
+        assert _extract_sqlstate(exc_info.value) == "42501"
+        await db_session.rollback()
 
-        assert row["id"] == new_id
-        assert row["user_id"] == test_user.id
-        assert row["visibility"] == "public"
-        assert row["file_path"] == new_path
-
-        # Confirm original private row is gone for owner as well
-        await configure_rls_context(db_session, test_user.id, "user")
-        old_exists = (
+        # Confirm original private row remains intact for owner
+        await configure_rls_context(db_session, owner_id, "user")
+        still_there = (
             await db_session.execute(select(Document).where(Document.id == old_id))
         ).scalar_one_or_none()
-        assert old_exists is None
+        assert still_there is not None
+        assert still_there.visibility == "private"
     finally:
         clear_rls_context(db_session)
         await db_session.rollback()

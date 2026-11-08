@@ -32,7 +32,6 @@ def upgrade() -> None:
     AS $$
     DECLARE
         v_uid  text := NULLIF(current_setting('app.user_id', true), '');
-        v_role text := NULLIF(current_setting('app.user_role', true), '');
         v_row  documents%ROWTYPE;
         v_new  documents%ROWTYPE;
     BEGIN
@@ -48,7 +47,7 @@ def upgrade() -> None:
             RAISE EXCEPTION 'document not found' USING ERRCODE = 'P0002';
         END IF;
 
-        IF v_role IS DISTINCT FROM 'admin' AND v_row.user_id::text <> v_uid THEN
+        IF v_row.user_id::text <> v_uid THEN
             RAISE EXCEPTION 'not permitted' USING ERRCODE = '42501';
         END IF;
 

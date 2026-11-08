@@ -108,8 +108,9 @@ async def health_check():
     # Check PostgreSQL
     try:
         import asyncpg
-        # parse url
-        conn = await asyncpg.connect("postgresql://postgres:postgres@localhost:5432/rag_db", timeout=2.0)
+        # Use the configured runtime URL (rag_app role) so this also works in Docker.
+        dsn = settings.app_database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        conn = await asyncpg.connect(dsn, timeout=2.0)
         version = await conn.fetchval("SELECT version();")
         await conn.close()
         status_report["services"]["postgres"] = {

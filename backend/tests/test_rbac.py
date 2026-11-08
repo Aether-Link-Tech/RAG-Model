@@ -209,3 +209,109 @@ async def test_collections_create_requires_admin(async_client, test_user: User, 
         "/api/v1/collections/", params={"name": "x"}, headers=_bearer(admin_user.id, admin_user.role)
     )
     assert as_admin.status_code == 200
+
+
+# --- AL-123: roles + user_roles tables -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_roles_table_is_seeded(async_client, admin_user: User):
+    res = await async_client.get("/api/v1/admin/roles", headers=_bearer(admin_user.id, admin_user.role))
+    assert res.status_code == 200
+    assert {r["name"] for r in res.json()} == {"admin", "user", "guest"}
+
+
+@pytest.mark.asyncio
+async def test_user_roles_follow_users_role(db_session: AsyncSession, test_user: User):
+    """The DB trigger keeps exactly one user_roles row per user, matching users.role."""
+    from sqlalchemy import text
+
+    async def _role_names() -> list[str]:
+        rows = await db_session.execute(
+            text(
+                "SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id "
+                "WHERE ur.user_id = :uid"
+            ),
+            {"uid": test_user.id},
+        )
+        return [r[0] for r in rows]
+
+    assert await _role_names() == ["user"]
+
+    test_user.role = UserRole.ADMIN.value
+    await db_session.commit()
+    assert await _role_names() == ["admin"]
+
+
+@pytest.mark.asyncio
+async def test_user_roles_rows_are_private_to_owner(
+    db_session: AsyncSession, test_user: User, test_user_2: User
+):
+    """RLS: a regular user only sees their own user_roles row."""
+    from sqlalchemy import select
+
+    from backend.app.db.rls import configure_rls_context
+    from backend.app.models.role import UserRoleAssignment
+
+    own_id, other_id = test_user.id, test_user_2.id
+    await db_session.rollback()
+    await configure_rls_context(db_session, own_id, "user")
+    rows = (await db_session.execute(select(UserRoleAssignment.user_id))).scalars().all()
+    assert own_id in rows
+    assert other_id not in rows
+
+
+# --- AL-124 / AL-126: /admin/* routes are admin-only ------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("get", "/api/v1/admin/users"),
+        ("get", "/api/v1/admin/roles"),
+        ("patch", "/api/v1/admin/users/{other}/role"),
+    ],
+)
+async def test_admin_routes_reject_regular_users(
+    async_client, test_user: User, admin_user: User, method: str, path: str
+):
+    url = path.format(other=admin_user.id)
+    kwargs = {"json": {"role": "user"}} if method == "patch" else {}
+
+    unauth = await getattr(async_client, method)(url, **kwargs)
+    assert unauth.status_code == 401
+
+    as_user = await getattr(async_client, method)(
+        url, headers=_bearer(test_user.id, test_user.role), **kwargs
+    )
+    assert as_user.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_routes_allow_admins(async_client, test_user: User, admin_user: User):
+    headers = _bearer(admin_user.id, admin_user.role)
+
+    listed = await async_client.get("/api/v1/admin/users", headers=headers)
+    assert listed.status_code == 200
+    assert str(test_user.id) in {u["id"] for u in listed.json()}
+
+    promoted = await async_client.patch(
+        f"/api/v1/admin/users/{test_user.id}/role", json={"role": "admin"}, headers=headers
+    )
+    assert promoted.status_code == 200
+    assert promoted.json()["role"] == "admin"
+
+
+def test_every_admin_route_is_guarded():
+    """The admin guard sits on the /admin router itself, so every route under it is covered."""
+    from backend.app.api.v1 import admin
+
+    assert admin.router.prefix == "/admin"
+    assert admin.router.routes
+    guards = [
+        d.dependency
+        for d in admin.router.dependencies
+        if getattr(d.dependency, "__name__", "") == "_role_guard"
+    ]
+    assert len(guards) == 1

@@ -86,6 +86,26 @@ def parser_sandbox_mode(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def fake_redis():
+    """In-memory Redis for the lockout counter and token blacklist (CI has no Redis)."""
+    import fakeredis
+
+    from backend.app.core.redis import set_redis_client
+
+    client = fakeredis.FakeAsyncRedis(decode_responses=True)
+    set_redis_client(client)
+    yield client
+    set_redis_client(None)
+
+
+@pytest.fixture(autouse=True)
+def auth_test_settings(monkeypatch):
+    """Captcha off and no real SMTP by default; captcha tests switch it back on."""
+    monkeypatch.setattr(settings, "RECAPTCHA_ENABLED", False)
+    monkeypatch.setattr(settings, "SMTP_HOST", "")
+
+
+@pytest.fixture(autouse=True)
 def isolate_storage(tmp_path, monkeypatch):
     """Isolate file storage per test using a temporary directory."""
     test_storage = tmp_path / "test_uploads"

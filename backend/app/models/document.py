@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
-from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, CheckConstraint, Index, func, text
+from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, ForeignKeyConstraint, CheckConstraint, Index, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.db.base import Base
@@ -56,6 +56,13 @@ class Document(Base):
         server_default="private",
         nullable=False
     )
+    # FR-012: NULL means "Uncategorized". The composite FK below guarantees the
+    # collection belongs to the document's owner.
+    collection_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True
+    )
     error_message: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True
@@ -78,6 +85,12 @@ class Document(Base):
     )
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "user_id"],
+            ["collections.id", "collections.user_id"],
+            name="fk_documents_collection_owner",
+            ondelete="SET NULL (collection_id)",
+        ),
         CheckConstraint(
             "status IN ('pending', 'processing', 'indexed', 'failed')",
             name="check_document_status"

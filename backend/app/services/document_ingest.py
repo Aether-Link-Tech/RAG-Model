@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -93,11 +94,38 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
     return document
 
 
+_SAFE_EXTENSION_RE = re.compile(r"^\.[a-z0-9]{1,10}$")
+
+
+class UnsafeStoragePathError(ValueError):
+    """A storage path would leave the owner's namespace."""
+
+
+def user_storage_dir(user_id: uuid.UUID) -> Path:
+    """`<UPLOAD_DIR>/users/<user_id>/documents` (AL-139)."""
+    return Path(settings.UPLOAD_DIR) / "users" / str(uuid.UUID(str(user_id))) / "documents"
+
+
 def build_storage_path(user_id: uuid.UUID, document_id: uuid.UUID, filename: str) -> str:
+    """Return `<UPLOAD_DIR>/users/<user_id>/documents/<document_id><.ext>` (AL-139).
+
+    Only the extension of the client filename is used, and only if it is a
+    plain `.abc123` suffix, so names like `../../x` or `a.pdf/..` can never
+    steer the write outside the owner's directory. The resolved path is
+    checked against that directory as a second guard.
+    """
+    owner_id = uuid.UUID(str(user_id))
+    doc_id = uuid.UUID(str(document_id))
     extension = Path(filename).suffix.lower()
-    directory = Path(settings.UPLOAD_DIR) / str(user_id)
+    if extension and not _SAFE_EXTENSION_RE.match(extension):
+        raise UnsafeStoragePathError("Unsupported file extension.")
+
+    directory = user_storage_dir(owner_id)
+    target = directory / f"{doc_id}{extension}"
+    if not target.resolve().is_relative_to(directory.resolve()):
+        raise UnsafeStoragePathError("Storage path escapes the user namespace.")
     os.makedirs(directory, exist_ok=True)
-    return str(directory / f"{document_id}{extension}")
+    return str(target)
 
 
 async def reindex_document_in_background(

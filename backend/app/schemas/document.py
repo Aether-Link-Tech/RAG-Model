@@ -29,6 +29,8 @@ class DocumentResponse(DocumentBase):
     file_hash: str
     status: str
     visibility: Visibility
+    # FR-012: None means "Uncategorized". Only shown for the caller's own documents.
+    collection_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None

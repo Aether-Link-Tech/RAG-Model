@@ -14,7 +14,7 @@ greenlet>=3.0.0
 
 # Auth
 PyJWT>=2.8.0
-passlib[bcrypt]>=1.7.4
+bcrypt>=4.1.0
 python-magic>=0.4.27
 
 # Jobs
@@ -49,3 +49,4 @@ httpx
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+fakeredis>=2.26.0

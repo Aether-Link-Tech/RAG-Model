@@ -2,6 +2,7 @@
 and AL-127 PostgreSQL Row-Level Security (RLS) on `documents`.
 """
 from datetime import timedelta
+import base64
 import hashlib
 import io
 import os
@@ -885,13 +886,27 @@ def test_security_configuration_rejects_insecure_production_settings():
             SMTP_HOST="",
         )
 
-    # 8. Valid production configuration -> accepted
+    # 8. Missing PII encryption keys in production -> rejected (FR-007)
+    with pytest.raises(ValueError, match="PII_ENCRYPTION_KEY"):
+        Settings(
+            ENV="production",
+            SECRET_KEY=strong_secret,
+            APP_DATABASE_URL=secure_app_db_url,
+            RECAPTCHA_SECRET_KEY="prod-recaptcha-secret",
+            SMTP_HOST="smtp.example.com",
+            PII_ENCRYPTION_KEY="",
+            PII_INDEX_KEY="",
+        )
+
+    # 9. Valid production configuration -> accepted
     prod_settings = Settings(
         ENV="production",
         SECRET_KEY=strong_secret,
         APP_DATABASE_URL=secure_app_db_url,
         RECAPTCHA_SECRET_KEY="prod-recaptcha-secret",
         SMTP_HOST="smtp.example.com",
+        PII_ENCRYPTION_KEY=base64.b64encode(b"k" * 32).decode(),
+        PII_INDEX_KEY=base64.b64encode(b"i" * 32).decode(),
     )
     assert prod_settings.ENV == "production"
     assert prod_settings.app_database_url == secure_app_db_url

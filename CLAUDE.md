@@ -16,11 +16,20 @@ FastAPI backend, PostgreSQL 17, ChromaDB, Redis/Celery, Ollama (local LLM + embe
 Python env: conda env **`rag-model`** (Python 3.11). Don't create ad-hoc venvs; add new deps to `backend/requirements.txt`.
 
 ```bash
-docker compose up -d                                   # postgres:5432, redis:6379, chroma:8001
+docker build -t rag-parser-sandbox:latest docker/parser   # parser sandbox image (once / after runner changes)
+docker compose up -d --build   # full stack: frontend:3000, backend:8000 (runs migrations), postgres:5432, redis:6379, chroma:8001, clamav:3310
+ollama pull nomic-embed-text  # embeddings; Ollama runs on the host
+# Local dev instead of the backend container (hot reload):
+docker compose stop backend frontend
 conda run -n rag-model alembic -c backend/alembic.ini upgrade head
 conda run -n rag-model uvicorn backend.app.main:app --reload --port 8000
 cd backend && conda run -n rag-model python -m pytest tests -q
+cd frontend && npm run dev     # :3000, proxies /api to :8000;  npm test = Vitest
 ```
+
+The backend container starts the parser sandbox through the mounted Docker socket (dev only) with
+`PARSER_INPUT_MODE=stdin`; on the host the default `mount` mode is used. Ollama runs on the host
+(`http://host.docker.internal:11434` from the container).
 
 Tests need PostgreSQL at `DATABASE_URL` (default `postgres:postgres@localhost:5432/rag_db`, migrated to head).
 Chroma and Ollama are faked in tests via the `chroma_client` (in-memory) and `fake_embeddings` fixtures.

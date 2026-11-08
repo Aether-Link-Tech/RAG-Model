@@ -6,6 +6,8 @@ and must refuse the request (503) instead of skipping the check.
 from __future__ import annotations
 
 import hashlib
+
+from backend.app.core.crypto import email_index
 import time
 
 from redis.exceptions import RedisError
@@ -28,7 +30,8 @@ def _token_key(token: str) -> str:
 
 
 def _login_key(email: str) -> str:
-    return LOGIN_FAIL_PREFIX + email.strip().lower()
+    # Keyed HMAC of the email, so Redis never holds the plaintext address (FR-007).
+    return LOGIN_FAIL_PREFIX + email_index(email)
 
 
 # --- Token blacklist (FR-003 / AL-20) ---------------------------------------------
@@ -99,7 +102,7 @@ async def claim_resend_slot(email: str, cooldown_seconds: int = 60) -> bool:
     try:
         return bool(
             await get_redis().set(
-                RESEND_COOLDOWN_PREFIX + email.strip().lower(), "1", ex=cooldown_seconds, nx=True
+                RESEND_COOLDOWN_PREFIX + email_index(email), "1", ex=cooldown_seconds, nx=True
             )
         )
     except RedisError as exc:

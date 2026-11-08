@@ -1,0 +1,22 @@
+# Keep the backend image small and free of local data/secrets.
+.git
+.github
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+.env
+.env.*
+!.env.example
+frontend
+docs
+uploads
+backend/uploads
+backend/users
+quarantine
+storage
+chroma_data
+postgres_data
+redis_data
+**/.venv
+**/venv
+**/node_modules

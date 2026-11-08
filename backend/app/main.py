@@ -1,30 +1,100 @@
+import asyncio
+import contextlib
+import logging
 import time
+from contextlib import asynccontextmanager
+
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-try:
-    from backend.app.core.config import settings
-    from backend.app.api.v1 import api_router
-except ImportError:
-    from app.core.config import settings
-    from app.api.v1 import api_router
+
+from backend.app.core.config import settings
+from backend.app.api.v1 import api_router
+from backend.app.services.audit_log import purge_expired_entries
+
+logger = logging.getLogger(__name__)
+
+AUDIT_PURGE_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+async def _purge_audit_log_periodically() -> None:
+    """Enforce the 90-day audit log retention (FR-069) once a day."""
+    while True:
+        try:
+            removed = await purge_expired_entries()
+            if removed:
+                logger.info("Purged %s expired security audit entries", removed)
+        except Exception:
+            logger.exception("Security audit retention purge failed")
+        await asyncio.sleep(AUDIT_PURGE_INTERVAL_SECONDS)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    task = asyncio.create_task(_purge_audit_log_periodically())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    description="Sprint 0 Stack Setup - Enterprise RAG Architecture with FastAPI, PostgreSQL, Redis, ChromaDB, and Ollama",
+    description="Aether Link: secure document intelligence and context-aware RAG (FastAPI, PostgreSQL, Redis, ChromaDB, Ollama)",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
-# CORS setup
+# The browser reaches the API through the same origin (nginx / Vite proxy); CORS is only
+# needed for the configured development origins.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all for development sprint 0
+    allow_origins=settings.BACKEND_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Captcha-Required", "Retry-After", "Content-Disposition"],
 )
+
+
+class NoStoreApiResponses:
+    """API responses carry user data: never cache them, so the browser back button
+    cannot show protected content after logout (FR-003).
+
+    Plain ASGI (not BaseHTTPMiddleware) so request cancellation propagates unchanged.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith("/api/"):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                present = {name.lower() for name, _ in headers}
+                for name, value in (
+                    (b"cache-control", b"no-store"),
+                    (b"pragma", b"no-cache"),
+                    (b"x-content-type-options", b"nosniff"),
+                ):
+                    if name not in present:
+                        headers.append((name, value))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(NoStoreApiResponses)
+
 
 app.include_router(api_router, prefix="/api/v1")
 
@@ -108,8 +178,9 @@ async def health_check():
     # Check PostgreSQL
     try:
         import asyncpg
-        # parse url
-        conn = await asyncpg.connect("postgresql://postgres:postgres@localhost:5432/rag_db", timeout=2.0)
+        # Use the configured runtime URL (rag_app role) so this also works in Docker.
+        dsn = settings.app_database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        conn = await asyncpg.connect(dsn, timeout=2.0)
         version = await conn.fetchval("SELECT version();")
         await conn.close()
         status_report["services"]["postgres"] = {

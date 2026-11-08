@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.app.api.deps import CurrentUser, DbSession, bearer_scheme
 from backend.app.core.config import settings
+from backend.app.core.crypto import email_index
 from backend.app.core.roles import UserRole
 from backend.app.core.security import (
     TokenValidationError,
@@ -55,6 +56,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 INVALID_CREDENTIALS = "Invalid email or password"
 CAPTCHA_FAILED = "Captcha verification failed."
 CAPTCHA_REQUIRED = "Captcha verification is required."
+CAPTCHA_HEADER = {"X-Captcha-Required": "true"}
 RESEND_MESSAGE = (
     "If an unverified account exists for this email, a new verification link has been sent."
 )
@@ -101,7 +103,7 @@ def _issue_tokens(user: User) -> TokenResponse:
 
 async def _active_user_by_email(db: DbSession, email: str) -> User | None:
     result = await db.execute(
-        select(User).where(User.email == email, User.is_deleted.is_(False))
+        select(User).where(User.email_hash == email_index(email), User.is_deleted.is_(False))
     )
     return result.scalar_one_or_none()
 
@@ -214,10 +216,15 @@ async def login(payload: LoginRequest, request: Request, db: DbSession) -> Token
         raise _service_unavailable(exc) from exc
 
     if failures >= settings.LOGIN_CAPTCHA_AFTER_FAILURES:
+        # The header tells the frontend to show the captcha widget.
         if not payload.captcha_token:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=CAPTCHA_REQUIRED)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=CAPTCHA_REQUIRED, headers=CAPTCHA_HEADER
+            )
         if not await verify_captcha(payload.captcha_token, _client_ip(request)):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=CAPTCHA_FAILED)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=CAPTCHA_FAILED, headers=CAPTCHA_HEADER
+            )
 
     user = await _active_user_by_email(db, email)
     if user is None or not verify_password(payload.password, user.hashed_password):
@@ -227,6 +234,12 @@ async def login(payload: LoginRequest, request: Request, db: DbSession) -> Token
                 raise _locked(await lockout_seconds_remaining(email))
         except AuthStateUnavailableError as exc:
             raise _service_unavailable(exc) from exc
+        if failures >= settings.LOGIN_CAPTCHA_AFTER_FAILURES:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=INVALID_CREDENTIALS,
+                headers={"WWW-Authenticate": "Bearer", **CAPTCHA_HEADER},
+            )
         raise _unauthorized()
 
     try:

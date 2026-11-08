@@ -1,0 +1,297 @@
+/* Shared components: buttons, logo, inputs, alerts */
+
+/* Buttons */
+.button {
+  min-height: 42px;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 0 17px;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    transform 220ms var(--ease),
+    box-shadow 220ms var(--ease),
+    background 200ms ease,
+    border-color 200ms ease,
+    color 200ms ease;
+}
+
+/* Light "shine" that sweeps across the button on hover */
+.button::after {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(110deg, transparent 30%, rgb(255 255 255 / 28%) 50%, transparent 70%);
+  transform: translateX(-120%);
+  transition: transform 700ms var(--ease);
+  content: "";
+  pointer-events: none;
+}
+
+.button:not(:disabled):hover::after {
+  transform: translateX(120%);
+}
+
+.button:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+}
+
+.button__arrow {
+  transition: transform 260ms var(--ease);
+}
+
+.button:hover .button__arrow {
+  transform: translateX(4px);
+}
+
+.button--primary {
+  background: linear-gradient(135deg, #2b8bff, var(--blue) 45%, var(--blue-dark));
+  color: white;
+  box-shadow:
+    0 8px 22px rgb(22 119 255 / 26%),
+    inset 0 1px rgb(255 255 255 / 22%);
+}
+
+.button--primary:not(:disabled):hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 14px 30px rgb(22 119 255 / 34%),
+    inset 0 1px rgb(255 255 255 / 22%);
+}
+
+.button--primary:disabled {
+  opacity: 0.6;
+}
+
+.button--ghost {
+  border-color: var(--line);
+  background: white;
+  color: #2d3c52;
+}
+
+.button--ghost:not(:disabled):hover {
+  border-color: #b9c9dc;
+  background: #f8fafc;
+  transform: translateY(-1px);
+}
+
+/* Transparent "glass" button used on the dark auth header */
+.button--glass {
+  border-color: rgb(255 255 255 / 22%);
+  background: rgb(5 25 61 / 50%);
+  color: white;
+  backdrop-filter: blur(14px);
+}
+
+.button--glass:hover {
+  border-color: rgb(67 199 255 / 60%);
+  background: rgb(12 46 102 / 60%);
+  box-shadow: 0 0 24px rgb(67 199 255 / 22%);
+  transform: translateY(-2px);
+}
+
+.button--danger {
+  background: var(--red);
+  color: white;
+  box-shadow: 0 8px 20px rgb(217 52 69 / 22%);
+}
+
+.button--danger:not(:disabled):hover {
+  background: #c22a3a;
+  transform: translateY(-1px);
+}
+
+.button--wide {
+  width: 100%;
+  min-height: 50px;
+}
+
+.icon-button {
+  width: 38px;
+  height: 38px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 9px;
+  color: #66758a;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
+}
+
+.icon-button:not(:disabled):hover {
+  background: #edf3f9;
+  color: #1b2b43;
+}
+
+.icon-button:not(:disabled):active {
+  transform: scale(0.92);
+}
+
+/* Logo */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.brand__mark {
+  width: 42px;
+  height: 42px;
+  overflow: hidden;
+  display: block;
+  border-radius: 12px;
+  background: white;
+  box-shadow:
+    0 6px 20px rgb(0 0 0 / 22%),
+    0 0 0 1px rgb(255 255 255 / 20%);
+  transition: transform 400ms var(--ease);
+}
+
+.brand:hover .brand__mark {
+  transform: rotate(-6deg) scale(1.05);
+}
+
+.brand__mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.18); /* hides the light edge around the round logo */
+}
+
+.brand strong,
+.brand small {
+  display: block;
+}
+
+.brand strong {
+  font-family: var(--font-display);
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.brand small {
+  margin-top: 2px;
+  color: #7f9abb;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #2aa7ea;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* Form fields (dark style, used on auth pages) */
+.field {
+  display: block;
+  margin-top: 14px;
+}
+
+.field > span {
+  display: block;
+  margin-bottom: 7px;
+  color: #b9c9dc;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.field__control {
+  min-height: 47px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgb(108 153 205 / 38%);
+  border-radius: 11px;
+  padding: 0 13px;
+  background: rgb(2 13 37 / 50%);
+  color: #7c9bbb;
+  box-shadow: inset 0 1px rgb(255 255 255 / 4%);
+  transition:
+    border-color 200ms ease,
+    box-shadow 200ms ease,
+    background 200ms ease,
+    color 200ms ease;
+}
+
+.field__control:hover {
+  border-color: rgb(108 170 235 / 55%);
+}
+
+.field__control:focus-within {
+  border-color: #2caaff;
+  background: rgb(4 22 58 / 70%);
+  color: #6cd5ff;
+  box-shadow: 0 0 0 4px rgb(44 170 255 / 14%);
+}
+
+.field__control input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: white;
+  font-size: 14px;
+}
+
+.field__control input::placeholder {
+  color: #5f7a99;
+}
+
+.field__control .icon-button {
+  width: 30px;
+  height: 30px;
+  color: #7894b2;
+}
+
+.field__control .icon-button:hover {
+  background: rgb(255 255 255 / 8%);
+  color: white;
+}
+
+/* Alerts */
+.form-alert {
+  margin-bottom: 14px;
+  display: flex;
+  gap: 9px;
+  border: 1px solid rgb(255 122 122 / 30%);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgb(134 31 46 / 24%);
+  color: #ffd5d8;
+  font-size: 12.5px;
+  line-height: 1.45;
+  animation:
+    fade-up 300ms var(--ease) both,
+    shake 380ms ease 120ms;
+}
+
+.form-alert svg {
+  flex: 0 0 auto;
+  color: #ff8d97;
+}

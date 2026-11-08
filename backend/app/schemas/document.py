@@ -22,10 +22,15 @@ class DocumentCreate(DocumentBase):
 
 class DocumentResponse(DocumentBase):
     id: uuid.UUID
-    user_id: uuid.UUID
+    # Only populated for the caller's own documents; None for other users' public
+    # documents so the uploader's identity is never revealed (FR-006).
+    user_id: Optional[uuid.UUID] = None
+    is_owner: bool = False
     file_hash: str
     status: str
     visibility: Visibility
+    # FR-012: None means "Uncategorized". Only shown for the caller's own documents.
+    collection_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None

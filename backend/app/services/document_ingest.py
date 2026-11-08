@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
+import re
+import threading
 import uuid
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
+from backend.app.db.session import AsyncSessionLocal
 from backend.app.models.document import Document
 from backend.app.services.chunking import split_text
 from backend.app.services.document_parser import (
+    DocumentParserError,
     UnsupportedDocumentError,
     extract_text,
 )
 from backend.app.services.embedding import EmbeddingError, embed_texts
 from backend.app.services.vector_store import Visibility, upsert_chunks
+
+logger = logging.getLogger(__name__)
 
 
 class IngestError(RuntimeError):
@@ -27,8 +35,15 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
     await db.commit()
     await db.refresh(document)
 
+    cancel_event = threading.Event()
     try:
-        text = extract_text(document.file_path, document.mime_type, document.filename)
+        text = await asyncio.to_thread(
+            extract_text,
+            document.file_path,
+            document.mime_type,
+            document.filename,
+            cancel_event=cancel_event,
+        )
         chunks = split_text(text)
         if not chunks:
             raise IngestError("No extractable text found in document")
@@ -54,7 +69,23 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
         )
         document.status = "indexed"
         document.error_message = None
-    except (UnsupportedDocumentError, EmbeddingError, IngestError, OSError, ValueError) as exc:
+    except asyncio.CancelledError:
+        cancel_event.set()
+        document.status = "failed"
+        document.error_message = "Document indexing was cancelled"
+        try:
+            await db.commit()
+        except Exception:
+            pass
+        raise
+    except (
+        DocumentParserError,
+        UnsupportedDocumentError,
+        EmbeddingError,
+        IngestError,
+        OSError,
+        ValueError,
+    ) as exc:
         document.status = "failed"
         document.error_message = str(exc)
 
@@ -63,8 +94,60 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
     return document
 
 
+_SAFE_EXTENSION_RE = re.compile(r"^\.[a-z0-9]{1,10}$")
+
+
+class UnsafeStoragePathError(ValueError):
+    """A storage path would leave the owner's namespace."""
+
+
+def user_storage_dir(user_id: uuid.UUID) -> Path:
+    """`<UPLOAD_DIR>/users/<user_id>/documents` (AL-139)."""
+    return Path(settings.UPLOAD_DIR) / "users" / str(uuid.UUID(str(user_id))) / "documents"
+
+
 def build_storage_path(user_id: uuid.UUID, document_id: uuid.UUID, filename: str) -> str:
+    """Return `<UPLOAD_DIR>/users/<user_id>/documents/<document_id><.ext>` (AL-139).
+
+    Only the extension of the client filename is used, and only if it is a
+    plain `.abc123` suffix, so names like `../../x` or `a.pdf/..` can never
+    steer the write outside the owner's directory. The resolved path is
+    checked against that directory as a second guard.
+    """
+    owner_id = uuid.UUID(str(user_id))
+    doc_id = uuid.UUID(str(document_id))
     extension = Path(filename).suffix.lower()
-    directory = Path(settings.UPLOAD_DIR) / str(user_id)
+    if extension and not _SAFE_EXTENSION_RE.match(extension):
+        raise UnsafeStoragePathError("Unsupported file extension.")
+
+    directory = user_storage_dir(owner_id)
+    target = directory / f"{doc_id}{extension}"
+    if not target.resolve().is_relative_to(directory.resolve()):
+        raise UnsafeStoragePathError("Storage path escapes the user namespace.")
     os.makedirs(directory, exist_ok=True)
-    return str(directory / f"{document_id}{extension}")
+    return str(target)
+
+
+async def reindex_document_in_background(
+    document_id: uuid.UUID,
+    user_id: uuid.UUID,
+    user_role: str = "user",
+) -> None:
+    """Reload and re-index a document in a session owned by the background task.
+
+    The session runs as the non-superuser rag_app role under RLS, so it must be
+    bound to the acting user's identity; without it the document is invisible
+    and would stay 'processing' forever.
+    """
+    from backend.app.db.rls import clear_rls_context, configure_rls_context
+
+    async with AsyncSessionLocal() as db:
+        try:
+            await configure_rls_context(db, user_id, user_role)
+            document = await db.get(Document, document_id)
+            if document is None:
+                logger.warning("Re-index skipped: document %s not visible to user %s", document_id, user_id)
+                return
+            await index_document(db, document)
+        finally:
+            clear_rls_context(db)

@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="941" viewBox="0 0 1680 941">
+<defs>
+ <radialGradient id="bg"><stop stop-color="#061b48"/><stop offset=".5" stop-color="#020d27"/><stop offset="1" stop-color="#010715"/></radialGradient>
+ <radialGradient id="planet" cx="36%" cy="28%"><stop stop-color="#65d9ff"/><stop offset=".17" stop-color="#168cff"/><stop offset=".48" stop-color="#0752d5"/><stop offset=".8" stop-color="#03266e"/><stop offset="1" stop-color="#010c31"/></radialGradient>
+ <radialGradient id="big" cx="32%" cy="28%"><stop stop-color="#80e8ff"/><stop offset=".2" stop-color="#178cff"/><stop offset=".58" stop-color="#0648c8"/><stop offset=".86" stop-color="#031c63"/><stop offset="1" stop-color="#010a2d"/></radialGradient>
+ <filter id="glow"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+ <path id="network" d="M0 270 148 137 245 239 422 28 558 0M0 402 100 402 179 326 245 239 333 360 423 28 550 194 682 0M30 401 52 563 179 326 201 464 333 360 456 493 552 322 680 450 792 366 878 0M52 563 75 820 201 464 284 611 382 729 510 540 552 322 680 450 772 706 822 616 878 0M75 820 135 907 284 611 382 729 456 882 605 764 680 450 772 706 823 617 878 0M680 450 810 225 878 0 1058 20 1152 150 1284 0M878 0 1014 92 1152 150 1061 344 1220 265 1284 0 1388 10 1460 192 1587 164 1680 160M1061 344 1152 150 1260 365 1460 192 1553 423 1680 322M1061 344 979 502 1150 556 1260 365 1378 510 1553 423 1680 545M979 502 1060 688 1150 556 1236 645 1378 510 1539 642 1680 545M1060 688 1150 556 1236 645 1303 802 1450 738 1539 642 1680 545M1060 688 1170 840 1303 802 1370 941 1450 738 1565 884 1680 741"/>
+</defs>
+
+<style>
+  /* Network lines gently brighten and dim */
+  .lines { animation: breathe 7s ease-in-out infinite; }
+
+  /* Light pulses travelling along the lines */
+  .pulse { stroke-dasharray: 18 260; animation: flow 12s linear infinite; }
+  .pulse--slow { stroke-dasharray: 10 330; animation-duration: 20s; animation-direction: reverse; }
+
+  /* Nodes twinkle at different times */
+  .node { transform-box: fill-box; transform-origin: center; animation: twinkle 4s ease-in-out infinite; }
+  .node:nth-child(3n) { animation-delay: -1.3s; animation-duration: 5s; }
+  .node:nth-child(3n+1) { animation-delay: -2.6s; animation-duration: 6s; }
+
+  /* Spheres float slowly up and down */
+  .orb { animation: float 9s ease-in-out infinite; }
+  .orb--slow { animation-duration: 14s; animation-delay: -4s; }
+  .orb--fast { animation-duration: 7s; animation-delay: -2s; }
+  .orb--big { animation: float-big 16s ease-in-out infinite; }
+
+  @keyframes breathe { 0%, 100% { opacity: .42; } 50% { opacity: .62; } }
+  @keyframes flow { to { stroke-dashoffset: -1112; } }
+  @keyframes twinkle { 0%, 100% { opacity: .45; transform: scale(1); } 50% { opacity: 1; transform: scale(1.6); } }
+  @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-14px); } }
+  @keyframes float-big { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(6px, 10px); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .lines, .pulse, .node, .orb, .orb--big { animation: none; }
+  }
+</style>
+
+<rect width="1680" height="941" fill="url(#bg)"/>
+
+<!-- constellation network -->
+<use href="#network" class="lines" fill="none" stroke="#0753cb" stroke-width="1"/>
+<use href="#network" class="pulse" fill="none" stroke="#43c7ff" stroke-width="1.6" stroke-linecap="round" opacity=".75"/>
+<use href="#network" class="pulse pulse--slow" fill="none" stroke="#9be6ff" stroke-width="1.2" stroke-linecap="round" opacity=".55"/>
+
+<g fill="#0875ff">
+<circle class="node" cx="148" cy="137" r="3"/><circle class="node" cx="245" cy="239" r="4"/><circle class="node" cx="422" cy="28" r="4"/><circle class="node" cx="100" cy="402" r="4"/><circle class="node" cx="179" cy="326" r="3"/><circle class="node" cx="201" cy="464" r="5"/><circle class="node" cx="552" cy="322" r="3"/><circle class="node" cx="680" cy="450" r="4"/><circle class="node" cx="792" cy="366" r="4"/><circle class="node" cx="878" cy="0" r="4"/><circle class="node" cx="979" cy="502" r="4"/><circle class="node" cx="1061" cy="344" r="4"/><circle class="node" cx="1152" cy="150" r="4"/><circle class="node" cx="1260" cy="365" r="3"/><circle class="node" cx="1378" cy="510" r="4"/><circle class="node" cx="1539" cy="642" r="4"/><circle class="node" cx="1303" cy="802" r="4"/><circle class="node" cx="1450" cy="738" r="4"/><circle class="node" cx="30" cy="401" r="4"/><circle class="node" cx="52" cy="563" r="5"/><circle class="node" cx="75" cy="820" r="4"/><circle class="node" cx="135" cy="907" r="4"/><circle class="node" cx="1058" cy="20" r="3"/>
+</g>
+
+<!-- orbital spheres -->
+<circle class="orb--big" cx="56" cy="155" r="190" fill="url(#big)" stroke="#138aff" stroke-width="2" filter="url(#glow)" opacity=".97"/>
+<circle class="orb orb--slow" cx="1525" cy="234" r="56" fill="url(#planet)" stroke="#1284ff" stroke-width="2" filter="url(#glow)"/>
+<circle class="orb orb--fast" cx="1617" cy="54" r="23" fill="url(#planet)" stroke="#168aff" stroke-width="1.5"/>
+<circle class="orb" cx="825" cy="91" r="22" fill="url(#planet)" stroke="#168aff" stroke-width="1.5"/>
+<circle class="orb orb--slow" cx="116" cy="587" r="29" fill="url(#planet)" stroke="#168aff" stroke-width="1.5"/>
+<circle class="orb orb--fast" cx="846" cy="762" r="29" fill="url(#planet)" stroke="#168aff" stroke-width="1.5"/>
+<circle class="orb" cx="1553" cy="424" r="22" fill="url(#planet)" stroke="#168aff" stroke-width="1.5"/>
+<circle class="orb orb--fast" cx="1628" cy="525" r="14" fill="url(#planet)" stroke="#168aff" stroke-width="1.5"/>
+<circle class="orb orb--slow" cx="1450" cy="10" r="7" fill="url(#planet)" stroke="#168aff"/>
+<path class="orb--big" d="M1450 941a210 210 0 0 1-65-112c-7-39 1-85 24-125 28-48 72-80 126-95 56-15 111-5 145 16v316z" fill="url(#big)" stroke="#168aff" stroke-width="2" filter="url(#glow)"/>
+</svg>

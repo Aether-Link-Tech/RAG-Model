@@ -2,6 +2,7 @@
 fastapi>=0.142.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.0.0
+pydantic-settings>=2.0.0
 python-multipart
 
 # Database
@@ -13,7 +14,7 @@ greenlet>=3.0.0
 
 # Auth
 PyJWT>=2.8.0
-passlib[bcrypt]>=1.7.4
+bcrypt>=4.1.0
 python-magic>=0.4.27
 
 # Jobs
@@ -44,3 +45,8 @@ clamd
 # Utils
 python-dotenv
 httpx
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+fakeredis>=2.26.0

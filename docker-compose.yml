@@ -63,8 +63,73 @@ services:
     environment:
       - CLAMD_CONF_StreamMaxLength=30M
 
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: rag-backend:latest
+    container_name: rag_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+      clamav:
+        condition: service_started
+    environment:
+      ENV: development
+      DEBUG: "false"
+      # Migrations run as the postgres superuser; requests run as rag_app (RLS).
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-rag_db}
+      APP_DB_USER: ${APP_DB_USER:-rag_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-rag_app_dev_password}
+      REDIS_URL: redis://redis:6379/0
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+      # Ollama runs on the host machine (Windows/macOS app).
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL_DOCKER:-http://host.docker.internal:11434}
+      UPLOAD_DIR: /data/uploads
+      CLAMAV_QUARANTINE_DIR: /data/quarantine
+      # The backend's file paths don't exist on the Docker host, so stream files
+      # into the parser sandbox instead of bind-mounting them (FR-067).
+      PARSER_INPUT_MODE: stdin
+      PARSER_SANDBOX_ENABLED: "True"
+    volumes:
+      - uploads_data:/data/uploads
+      - quarantine_data:/data/quarantine
+      - hf_cache:/root/.cache/huggingface
+      # DEV ONLY: lets the backend start the parser sandbox container.
+      # Access to the Docker socket is root-equivalent on the host.
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    image: rag-frontend:latest
+    container_name: rag_frontend
+    restart: unless-stopped
+    # Open http://localhost:3000 (nginx serves the app and proxies /api to backend).
+    # Stop `npm run dev` first, or set FRONTEND_PORT to another port.
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - backend
+
 volumes:
   postgres_data:
   redis_data:
   chroma_data:
   clamav_data:
+  uploads_data:
+  quarantine_data:
+  hf_cache:

@@ -120,6 +120,9 @@ class Settings(BaseConfig):
     PARSER_CPU_LIMIT: str = os.getenv("PARSER_CPU_LIMIT", "1.0")
     PARSER_TIMEOUT_SECONDS: int = int(os.getenv("PARSER_TIMEOUT_SECONDS", "60"))
     PARSER_MAX_OUTPUT_BYTES: int = int(os.getenv("PARSER_MAX_OUTPUT_BYTES", str(10 * 1024 * 1024)))
+    # "mount": bind-mount the file read-only (backend on the host).
+    # "stdin": stream the file through stdin (backend inside a container).
+    PARSER_INPUT_MODE: str = os.getenv("PARSER_INPUT_MODE", "mount")
 
     @property
     def migration_database_url(self) -> str:

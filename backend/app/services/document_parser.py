@@ -69,13 +69,18 @@ def build_docker_run_command(
     docker_image: Optional[str] = None,
     memory_limit: Optional[str] = None,
     cpu_limit: Optional[str] = None,
+    input_mode: Optional[str] = None,
 ) -> list[str]:
     """Construct hardened docker run invocation for document parsing (AL-163 & AL-164).
 
     Security constraints applied:
     - --network none: complete network isolation (no internet, no LAN, no host access).
     - --read-only: immutable root filesystem.
-    - -v host_path:container_path:ro: input file mounted strictly read-only.
+    - input_mode "mount" (default): -v host_path:container_path:ro, input file
+      mounted strictly read-only.
+    - input_mode "stdin": no host mount at all; the file is streamed through
+      stdin (-i). Needed when the backend itself runs in a container, where
+      its file paths don't exist on the Docker host.
     - --tmpfs /tmp:rw,noexec,nosuid,size=64m: isolated in-memory scratch space.
     - --security-opt no-new-privileges:true: blocks setuid/setgid privilege escalation.
     - --cap-drop ALL: drops all Linux capabilities.
@@ -114,6 +119,16 @@ def build_docker_run_command(
         cpus,
         "--pids-limit",
         "64",
+    ]
+    mode = (input_mode or settings.PARSER_INPUT_MODE or "mount").lower()
+    if mode == "stdin":
+        suffix = Path(container_input_path).suffix.lower()
+        cmd += ["-i", image, "-", mime_type or "", suffix]
+        return cmd
+    if mode != "mount":
+        raise ValueError(f"Unsupported PARSER_INPUT_MODE: {mode!r}")
+
+    cmd += [
         "-v",
         f"{host_file_path}:{container_input_path}:ro",
         image,
@@ -253,6 +268,25 @@ def _communicate_with_limits(
     return stdout_text, stderr_text
 
 
+def _start_stdin_feeder(proc: subprocess.Popen, path: Path) -> None:
+    """Stream the document into the sandbox's stdin from a background thread."""
+
+    def _feed() -> None:
+        try:
+            with open(path, "rb") as source:
+                while chunk := source.read(65536):
+                    proc.stdin.write(chunk)
+        except (BrokenPipeError, OSError, ValueError):
+            pass  # container exited or was killed; the reader reports the error
+        finally:
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+
+    threading.Thread(target=_feed, daemon=True).start()
+
+
 def extract_text_sandboxed(
     file_path: str | Path,
     mime_type: str,
@@ -276,6 +310,7 @@ def extract_text_sandboxed(
     safe_name = resolved_path.name or Path(filename).name or "document"
     container_input_path = f"/input/{safe_name}"
 
+    use_stdin = (settings.PARSER_INPUT_MODE or "mount").lower() == "stdin"
     cmd = build_docker_run_command(
         container_name=container_name,
         host_file_path=str(resolved_path),
@@ -290,9 +325,12 @@ def extract_text_sandboxed(
     try:
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.PIPE if use_stdin else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        if use_stdin:
+            _start_stdin_feeder(proc, resolved_path)
         stdout, stderr = _communicate_with_limits(
             proc=proc,
             max_output_bytes=max_bytes,

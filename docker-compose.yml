@@ -162,6 +162,33 @@ services:
       - "127.0.0.1:8025:8025"
       - "127.0.0.1:1025:1025"
 
+  integrity-check:
+    # FR-075 / AL-270: daily cross-layer check (PostgreSQL vs ChromaDB vs file storage).
+    # Opt-in:  docker compose --profile ops up -d integrity-check
+    # One-off: docker compose run --rm integrity-check python -m backend.app.scripts.integrity_check
+    # Read-only; reports land in the integrity_reports volume (exit code 2 = cross-user exposure).
+    image: rag-backend:latest
+    container_name: rag_integrity_check
+    profiles: ["ops"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-rag_db}
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      UPLOAD_DIR: /data/uploads
+    volumes:
+      - uploads_data:/data/uploads:ro
+      - integrity_reports:/data/reports
+    command: ["sh", "-c", "while true; do python -m backend.app.scripts.integrity_check --json /data/reports/integrity-latest.json; sleep 86400; done"]
+
 volumes:
   postgres_data:
   redis_data:
@@ -172,3 +199,4 @@ volumes:
   hf_cache:
   caddy_data:
   caddy_config:
+  integrity_reports:

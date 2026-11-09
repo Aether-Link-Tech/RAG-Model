@@ -429,6 +429,19 @@ Outside development, startup refuses the default `SECRET_KEY`, a `postgres` runt
 
 Run only the isolation tests with `pytest -m isolation`.
 
+**Isolation suite (FR-075).** `backend/tests/isolation_catalog.py` maps TC-ISO-01 … TC-ISO-10
+(documents, document actions, conversations, citations, chunks, files, vector store, search,
+collections/roles, cross-layer integrity) to the tests that prove them; CI runs
+`pytest -m isolation` as its own step on every PR. Add new layers' tests to the catalog.
+
+**Integrity check (FR-075).** `python -m backend.app.scripts.integrity_check [--repair] [--json report.json]`
+compares PostgreSQL, ChromaDB and file storage: orphan or misplaced vectors (critical if a
+private chunk is in the public collection or another user's collection), missing files,
+files outside the owner's folder, indexed documents without vectors, orphan files.
+Read-only by default; `--repair` removes bad vectors and marks missing-file documents failed
+(never deletes files). Exit code 0 clean / 1 issues / 2 critical. Scheduled daily with
+`docker compose --profile ops up -d integrity-check`.
+
 ### 5.6 Vector store layout (ChromaDB)
 
 | Collection | Name | Metadata | Who can read |

@@ -311,3 +311,14 @@ def bearer(user: User) -> dict[str, str]:
     from backend.app.core.security import create_access_token
 
     return {"Authorization": f"Bearer {create_access_token(user.id, role=user.role)}"}
+
+
+def pytest_collection_modifyitems(config, items):
+    """Tag every test listed in the TC-ISO catalog with `isolation` and `tc_iso(<id>)` (AL-269)."""
+    from backend.tests.isolation_catalog import case_for
+
+    for item in items:
+        function = getattr(item, "originalname", None) or item.name.split("[")[0]
+        for case in case_for(item.path.name, function):
+            item.add_marker(pytest.mark.isolation)
+            item.add_marker(pytest.mark.tc_iso(case))

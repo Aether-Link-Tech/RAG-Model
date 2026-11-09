@@ -379,6 +379,69 @@ def delete_document_chunks(
     collection.delete(where=where)
 
 
+def copy_private_chunks_to_public(
+    *,
+    user_id: uuid.UUID | str,
+    old_document_id: uuid.UUID | str,
+    new_document_id: uuid.UUID | str,
+) -> int:
+    """Copy a document's private vectors into the public collection without re-embedding.
+
+    Chunks are read from the owner's private collection (filtered by owner,
+    visibility='private' and the old document id), re-keyed to
+    `<new_document_id>:<n>`, tagged visibility='public' with the owner's user_id,
+    and upserted into the public collection. Returns the number of chunks copied;
+    0 means the private collection held nothing for this document.
+    """
+    collection = get_private_collection(user_id)
+    if collection is None:
+        return 0
+    where = {
+        "$and": [
+            _owner_filter(user_id),
+            {"visibility": {"$eq": "private"}},
+            {"document_id": {"$eq": str(old_document_id)}},
+        ]
+    }
+    stored = collection.get(where=where, include=["documents", "embeddings", "metadatas"])
+    old_ids = list(stored.get("ids") or [])
+    if not old_ids:
+        return 0
+    documents = list(stored.get("documents") or [])
+    embeddings = stored.get("embeddings")
+    metadatas = list(stored.get("metadatas") or [])
+    if embeddings is None or len(embeddings) != len(old_ids):
+        raise VectorStoreError("Stored chunks are missing embeddings")
+
+    # Keep the original chunk order: ids look like `<document_id>:<chunk_index>`.
+    order = sorted(
+        range(len(old_ids)),
+        key=lambda i: int((metadatas[i] or {}).get("chunk_index", i)),
+    )
+    new_ids: list[str] = []
+    new_embeddings: list[list[float]] = []
+    new_documents: list[str] = []
+    new_metadatas: list[dict[str, Any]] = []
+    for position, i in enumerate(order):
+        metadata = dict(metadatas[i] or {})
+        metadata["document_id"] = str(new_document_id)
+        metadata.setdefault("chunk_index", position)
+        new_ids.append(f"{new_document_id}:{metadata['chunk_index']}")
+        new_embeddings.append([float(x) for x in embeddings[i]])
+        new_documents.append(documents[i])
+        new_metadatas.append(metadata)
+
+    upsert_chunks(
+        user_id=user_id,
+        ids=new_ids,
+        embeddings=new_embeddings,
+        documents=new_documents,
+        metadatas=new_metadatas,
+        visibility="public",
+    )
+    return len(new_ids)
+
+
 def rename_document_chunks(
     *,
     user_id: uuid.UUID | str,

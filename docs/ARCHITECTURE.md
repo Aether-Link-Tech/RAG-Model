@@ -404,13 +404,30 @@ Outside development, startup refuses the default `SECRET_KEY`, a `postgres` runt
 
 1. Add the SQLAlchemy model in `backend/app/models/` and import it in `models/__init__.py`.
 2. Run `alembic -c backend/alembic.ini revision --autogenerate -m "..."` and **review** the generated file.
-3. In the same migration:
-   - `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE <t> TO rag_app;` (grant only what's needed)
-   - `ALTER TABLE <t> ENABLE ROW LEVEL SECURITY; ALTER TABLE <t> FORCE ROW LEVEL SECURITY;`
-   - `CREATE POLICY ...` that uses `current_setting('app.user_id', true)`
-   - matching `DROP POLICY / REVOKE` in `downgrade()`
-4. Run `alembic upgrade head`, then `pytest`. Add a cross-user test (User B gets 0 rows).
-5. Without step 3, every request that touches the table fails with **permission denied**.
+3. In the same migration, protect the table with the shared helper (FR-072):
+   ```python
+   from backend.app.db.rls_policies import owner_rls_sql, drop_owner_rls_sql
+
+   def upgrade():
+       op.create_table("document_chunks", ...)          # must have a user_id column
+       for statement in owner_rls_sql("document_chunks"):
+           op.execute(statement)                         # GRANT + ENABLE/FORCE RLS + owner policy
+
+   def downgrade():
+       for statement in drop_owner_rls_sql("document_chunks"):
+           op.execute(statement)
+       op.drop_table("document_chunks")
+   ```
+   Options: `privileges="SELECT, INSERT"` to grant less, `admin_can_read=True` only for
+   data admins may see (never for document text or conversations). Tables with special
+   rules (e.g. `documents` public/private, `security_audit_log`) keep hand-written policies.
+4. Run `alembic upgrade head`, then `pytest`. Add rows to `backend/tests/test_rls_per_table.py`
+   for the new table (user B and an unauthenticated connection get 0 rows).
+5. `backend/tests/test_rls_guard.py` fails CI for any table without FORCE RLS and a policy;
+   exemptions (`users`, `alembic_version`) are listed there with their reasons.
+6. Without step 3, every request that touches the table fails with **permission denied**.
+
+Run only the isolation tests with `pytest -m isolation`.
 
 ### 5.6 Vector store layout (ChromaDB)
 

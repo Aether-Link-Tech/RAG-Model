@@ -133,6 +133,14 @@ class Settings(BaseConfig):
     # "mount": bind-mount the file read-only (backend on the host).
     # "stdin": stream the file through stdin (backend inside a container).
     PARSER_INPUT_MODE: str = os.getenv("PARSER_INPUT_MODE", "mount")
+    # Layout mode returns embedded images as base64 (FR-058), so it needs a larger cap.
+    PARSER_LAYOUT_MAX_OUTPUT_BYTES: int = int(os.getenv("PARSER_LAYOUT_MAX_OUTPUT_BYTES", str(40 * 1024 * 1024)))
+
+    # OCR of images inside PDF / DOCX (FR-058 – FR-063). Off unless an OCR worker is configured.
+    OCR_ENABLED: bool = os.getenv("OCR_ENABLED", "False").lower() in ("true", "1")
+    OCR_SERVICE_URL: str = os.getenv("OCR_SERVICE_URL", "http://localhost:8090")
+    OCR_DOCUMENT_BUDGET_SECONDS: float = float(os.getenv("OCR_DOCUMENT_BUDGET_SECONDS", "30"))
+    OCR_BATCH_SIZE: int = int(os.getenv("OCR_BATCH_SIZE", "4"))
 
     @property
     def migration_database_url(self) -> str:

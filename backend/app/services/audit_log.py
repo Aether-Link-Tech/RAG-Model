@@ -24,7 +24,8 @@ UPLOAD_REJECTED = "upload_rejected"
 REPLACE_REJECTED = "replace_rejected"
 ACCESS_DENIED = "access_denied"
 DOWNLOAD_BLOCKED = "download_blocked"
-EVENT_TYPES = (UPLOAD_REJECTED, REPLACE_REJECTED, ACCESS_DENIED, DOWNLOAD_BLOCKED)
+OCR_IMAGE_SKIPPED = "ocr_image_skipped"  # FR-063: an image could not be OCR-ed and was skipped
+EVENT_TYPES = (UPLOAD_REJECTED, REPLACE_REJECTED, ACCESS_DENIED, DOWNLOAD_BLOCKED, OCR_IMAGE_SKIPPED)
 
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 

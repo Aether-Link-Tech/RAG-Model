@@ -11,7 +11,8 @@ from sqlalchemy import text
 
 from backend.app.db import chroma
 from backend.app.scripts import integrity_check as cli
-from backend.app.services.integrity_check import CRITICAL, DocumentRecord, check_integrity
+from backend.app.services.document_ingest import user_storage_dir
+from backend.app.services.integrity_check import CRITICAL, DocumentRecord, check_integrity, owner_folders
 from backend.app.services.vector_store import upsert_chunks
 
 pytestmark = pytest.mark.isolation
@@ -21,7 +22,7 @@ EMB = [[0.1, 0.2, 0.3]]
 
 def _doc(upload_dir, user_id, visibility="private", status="indexed", *, write_file=True, name=None):
     doc_id = uuid.uuid4()
-    folder = Path(upload_dir) / str(user_id)
+    folder = user_storage_dir(user_id)  # current layout: <UPLOAD_DIR>/users/<id>/documents
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / (name or f"{doc_id}.txt")
     if write_file:
@@ -107,7 +108,7 @@ def test_detects_mis_stamped_and_unknown_collections(world):
 def test_detects_missing_file_and_file_outside_owner_folder(world):
     a_doc = world["docs"][0]
     Path(a_doc.file_path).unlink()
-    b_folder = Path(world["dir"]) / str(world["b"])
+    b_folder = user_storage_dir(world["b"])
     misplaced = DocumentRecord(uuid.uuid4(), world["a"], "private", "pending", str(b_folder / "a-in-b.txt"))
     (b_folder / "a-in-b.txt").write_text("x")
     report = check_integrity(world["docs"] + [misplaced], chroma_client=world["client"], upload_dir=world["dir"])
@@ -117,7 +118,7 @@ def test_detects_missing_file_and_file_outside_owner_folder(world):
 
 
 def test_detects_orphan_files_but_ignores_transient_ones(world):
-    folder = Path(world["dir"]) / str(world["a"])
+    folder = user_storage_dir(world["a"])
     (folder / "forgotten.pdf").write_text("x")
     (folder / "upload.txt.123.tmp").write_text("x")
     (folder / ".doc.txt.abc.deleting").write_text("x")
@@ -189,3 +190,20 @@ def test_cli_exit_codes_and_json_report(world, monkeypatch, tmp_path):
         metadatas=[{"document_id": str(world["docs"][2].id), "user_id": world["b"].hex, "visibility": "public"}])
     _, code = cli.run([])
     assert code == 2
+
+
+def test_owner_folders_match_the_storage_layout(isolate_storage):
+    """Guards against drift between the integrity check and build_storage_path (AL-139)."""
+    user = uuid.uuid4()
+    current, legacy = owner_folders(Path(isolate_storage).resolve(), user)
+    assert current == user_storage_dir(user).resolve()
+    assert legacy == (Path(isolate_storage) / str(user)).resolve()
+
+
+def test_legacy_layout_files_are_accepted(world):
+    legacy_folder = Path(world["dir"]) / str(world["a"])
+    legacy_folder.mkdir(parents=True, exist_ok=True)
+    (legacy_folder / "old.txt").write_text("x")
+    old = DocumentRecord(uuid.uuid4(), world["a"], "private", "pending", str(legacy_folder / "old.txt"))
+    report = check_integrity(world["docs"] + [old], chroma_client=world["client"], upload_dir=world["dir"])
+    assert report.issues == []

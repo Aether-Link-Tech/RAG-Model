@@ -200,13 +200,19 @@ def _check_vectors(report: Report, docs: dict[uuid.UUID, DocumentRecord], client
     return chunk_counts
 
 
+def owner_folders(root: Path, user_id: uuid.UUID) -> tuple[Path, ...]:
+    """Folders a user's files may live in: the current layout <root>/users/<id>/documents
+    (AL-139) and the legacy <root>/<id> used before it."""
+    return (root / "users" / str(user_id) / "documents", root / str(user_id))
+
+
 def _check_files(report: Report, docs: dict[uuid.UUID, DocumentRecord], upload_dir: Path) -> None:
     root = upload_dir.resolve()
     referenced: set[Path] = set()
     for doc in docs.values():
         path = Path(doc.file_path).resolve()
         referenced.add(path)
-        if not path.is_relative_to(root / str(doc.user_id)):
+        if not any(path.is_relative_to(folder) for folder in owner_folders(root, doc.user_id)):
             report.issues.append(Issue("file_outside_owner_folder", "Document file is not inside its owner's folder",
                                        document_id=str(doc.id), path=str(path)))
         if not path.is_file():

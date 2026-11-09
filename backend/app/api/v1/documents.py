@@ -24,6 +24,7 @@ from backend.app.core.roles import UserRole
 from backend.app.models.document import Document
 from backend.app.schemas.document import DocumentResponse, Visibility
 from backend.app.services import audit_log
+from backend.app.services.near_duplicate import NearDuplicateError
 from backend.app.services.clamav import (
     ClamAVUnavailableError,
     InfectedFileError,
@@ -462,7 +463,27 @@ async def upload_document(
         raise
 
     await db.refresh(document)
-    return _to_response(await index_document(db, document), current_user.id)
+    try:
+        indexed = await index_document(db, document)
+    except NearDuplicateError as exc:
+        # FR-081: the upload is rejected and removed cleanly (row, file; no vectors were written).
+        await _discard_rejected_upload(db, document)
+        await log_security_event(
+            user_id_str, filename_str, "Near-duplicate of an existing document", client_ip,
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return _to_response(indexed, current_user.id)
+
+
+async def _discard_rejected_upload(db: DbSession, document: Document) -> None:
+    file_path = document.file_path
+    try:
+        await db.delete(document)
+        await db.commit()
+    except Exception:
+        await _safe_rollback(db)
+        logger.exception("Could not remove rejected near-duplicate document %s", document.id)
+    _best_effort_remove(file_path)
 
 
 def _to_response(document: Document, caller_id: uuid.UUID) -> DocumentResponse:

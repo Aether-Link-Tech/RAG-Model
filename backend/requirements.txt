@@ -29,6 +29,7 @@ transformers>=4.40.0
 torch>=2.2.0
 tiktoken
 rank-bm25
+datasketch>=1.6
 
 # Documents
 pypdf2

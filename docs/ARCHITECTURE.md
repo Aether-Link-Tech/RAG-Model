@@ -434,6 +434,15 @@ Run only the isolation tests with `pytest -m isolation`.
 collections/roles, cross-layer integrity) to the tests that prove them; CI runs
 `pytest -m isolation` as its own step on every PR. Add new layers' tests to the catalog.
 
+**Near-duplicate detection (FR-081).** After text extraction, `services/near_duplicate.py` builds a
+128-permutation MinHash over word 3-grams and looks up candidates through 42 LSH bands of 3
+(`document_fingerprint_bands`, indexed on `(band, hash)`), then scores them exactly. An upload
+≥ 50 % similar to the caller's own or a public document is rejected with 409 naming that
+document, and removed (row, file); a replacement that duplicates another document is marked
+failed with the same message. RLS on the fingerprint tables only exposes the caller's own and
+public fingerprints, so another user's private document can never match or be named.
+Benchmark: 398 ms against 10,000 fingerprinted documents (requirement < 5 s).
+
 **Integrity check (FR-075).** `python -m backend.app.scripts.integrity_check [--repair] [--json report.json]`
 compares PostgreSQL, ChromaDB and file storage: orphan or misplaced vectors (critical if a
 private chunk is in the public collection or another user's collection), missing files,

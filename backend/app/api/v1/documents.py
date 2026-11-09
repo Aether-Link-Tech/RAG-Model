@@ -22,7 +22,7 @@ from backend.app.api.v1.collections import get_owned_collection
 from backend.app.core.config import settings
 from backend.app.core.roles import UserRole
 from backend.app.models.document import Document
-from backend.app.schemas.document import DocumentResponse, Visibility
+from backend.app.schemas.document import DocumentResponse, PublishResponse, Visibility
 from backend.app.services import audit_log
 from backend.app.services.clamav import (
     ClamAVUnavailableError,
@@ -34,6 +34,7 @@ from backend.app.services.document_ingest import (
     index_document,
     reindex_document_in_background,
 )
+from backend.app.services.document_publish import PublishError, publish_private_document
 from backend.app.services.hash_service import (
     FileSizeLimitExceededError,
     compute_sha256_and_size_stream,
@@ -581,6 +582,37 @@ async def download_document(
         filename=document.filename,
         media_type=document.mime_type,
     )
+
+
+@router.post(
+    "/{document_id}/publish",
+    response_model=PublishResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def publish_document_endpoint(
+    request: Request,
+    document_id: uuid.UUID,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> PublishResponse:
+    """Publish one of the caller's own indexed private documents (AL-185).
+
+    Owner only, no request body. Anyone else (admins included) and unknown ids get
+    404; already published, duplicate public content and not-indexed documents get
+    409. Returns the NEW public document.
+    """
+    caller_id = current_user.id
+    try:
+        result = await publish_private_document(
+            db,
+            caller_id=caller_id,
+            document_id=document_id,
+            client_ip=request.client.host if request.client else "unknown",
+        )
+    except PublishError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    base = _to_response(result.document, caller_id)
+    return PublishResponse(**base.model_dump(), warning=result.warning)
 
 
 @router.put(

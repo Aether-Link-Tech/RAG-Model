@@ -65,6 +65,10 @@ jobs:
       - name: Run migrations
         run: alembic -c backend/alembic.ini upgrade head
 
-      - name: Run tests (includes TC-ISO private KB isolation)
+      - name: Isolation suite (TC-ISO-01..10, RLS guard, integrity check)
+        working-directory: backend
+        run: python -m pytest tests -m isolation -v
+
+      - name: Full test suite
         working-directory: backend
         run: python -m pytest tests -v

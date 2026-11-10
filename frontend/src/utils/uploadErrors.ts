@@ -37,7 +37,9 @@ export function describeUploadError(error: unknown): UploadRejection {
     return { kind: 'scanner', title: 'Security scan unavailable', reason: 'The malware scanner is temporarily unavailable, so the file was not accepted. Please try again in a moment.', security: true, retryable: true };
   }
   if (status === 409) {
-    return { kind: 'duplicate', title: 'Already uploaded', reason: detail || 'This document already exists.', security: false, retryable: false };
+    // FR-081: near-duplicates (>= 50 % similar) name the existing public or own document.
+    const title = text.includes('similar') ? 'Similar document already exists' : 'Already uploaded';
+    return { kind: 'duplicate', title, reason: detail || 'This document already exists.', security: false, retryable: false };
   }
   if (status === 400) {
     if (text.includes('double extension') || text.includes('archive extension') || text.includes('multiple extensions')) {

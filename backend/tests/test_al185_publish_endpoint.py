@@ -254,8 +254,11 @@ async def test_duplicate_public_hash_is_409_and_nothing_changes(
 ):
     """9. A public copy with the same hash exists -> 409; private row, file, chunks unchanged."""
     shared = _content("shared")
-    await _upload(async_client, test_user_2, shared, visibility="public")
+    # Private copy first: once the public copy exists, FR-081 near-duplicate detection would
+    # reject uploading the same content again. User 2 cannot see user 1's private document,
+    # so their public upload is accepted.
     doc = await _upload(async_client, test_user, shared)
+    await _upload(async_client, test_user_2, shared, visibility="public")
     old_row = await _row(db_session, test_user, doc["id"])
     before_files = _owner_files(test_user)
     chunks_before = _chunks(get_private_collection(test_user.id), doc["id"])["ids"]

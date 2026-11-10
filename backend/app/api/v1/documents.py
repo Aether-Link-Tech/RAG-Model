@@ -25,6 +25,7 @@ from backend.app.models.document import Document
 from backend.app.schemas.document import DocumentResponse, PublishResponse, Visibility
 from backend.app.services import audit_log
 from backend.app.services.near_duplicate import NearDuplicateError
+from backend.app.services.document_images import remove_image_files
 from backend.app.services.clamav import (
     ClamAVUnavailableError,
     InfectedFileError,
@@ -477,7 +478,8 @@ async def upload_document(
 
 
 async def _discard_rejected_upload(db: DbSession, document: Document) -> None:
-    file_path = document.file_path
+    file_path, owner_id, document_id = document.file_path, document.user_id, document.id
+    remove_image_files(owner_id, document_id)
     try:
         await db.delete(document)
         await db.commit()
@@ -897,6 +899,7 @@ async def delete_document(
 
     visibility = "public" if document.visibility == "public" else "private"
     document_id = document.id
+    owner_id = document.user_id
     original_path = Path(document.file_path)
     staged_path = original_path.with_name(
         f".{original_path.name}.{uuid.uuid4().hex}.deleting"
@@ -942,6 +945,7 @@ async def delete_document(
             detail="Document deletion could not be completed. Please retry.",
         ) from exc
 
+    remove_image_files(owner_id, document_id)  # extracted images (FR-058); rows cascade
     if staged_file:
         try:
             staged_path.unlink()

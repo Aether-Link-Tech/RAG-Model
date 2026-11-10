@@ -207,3 +207,16 @@ def test_legacy_layout_files_are_accepted(world):
     old = DocumentRecord(uuid.uuid4(), world["a"], "private", "pending", str(legacy_folder / "old.txt"))
     report = check_integrity(world["docs"] + [old], chroma_client=world["client"], upload_dir=world["dir"])
     assert report.issues == []
+
+
+def test_extracted_images_are_not_orphan_files(world):
+    """FR-058 images live in <owner folder>/images/<document_id>/ and belong to that document."""
+    doc = world["docs"][0]
+    own_images = user_storage_dir(doc.user_id) / "images" / str(doc.id)
+    own_images.mkdir(parents=True)
+    (own_images / "0.png").write_bytes(b"png")
+    stale = user_storage_dir(doc.user_id) / "images" / str(uuid.uuid4())
+    stale.mkdir(parents=True)
+    (stale / "0.png").write_bytes(b"png")
+    report = check_integrity(world["docs"], chroma_client=world["client"], upload_dir=world["dir"])
+    assert [Path(i.path).parent.name for i in report.by_kind("orphan_file")] == [stale.name]

@@ -13,6 +13,7 @@ export const EVENT_LABELS: Record<AuditEventType, string> = {
   replace_rejected: 'Replacement rejected',
   access_denied: 'Access denied',
   download_blocked: 'Download blocked',
+  ocr_image_skipped: 'OCR image skipped',
 };
 
 export default function AuditLogPage() {

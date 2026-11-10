@@ -19,9 +19,9 @@ COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
 
 WORKDIR /app
 
-# CPU-only torch first keeps the image much smaller; requirements then reuse it.
+# CPU-only torch + torchvision first (matching builds; a PyPI torchvision breaks Florence-2 OCR).
 COPY backend/requirements.txt backend/requirements.txt
-RUN pip install torch --index-url https://download.pytorch.org/whl/cpu \
+RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu \
  && pip install -r backend/requirements.txt
 
 COPY backend backend

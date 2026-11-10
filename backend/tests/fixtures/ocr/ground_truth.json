@@ -1,0 +1,222 @@
+{
+  "ocr_pdf_01_clean.pdf": [
+    {
+      "image_index": 0,
+      "page": 1,
+      "quality": "clean",
+      "text": "Quarterly revenue grew twelve percent"
+    }
+  ],
+  "ocr_pdf_02_clean.pdf": [
+    {
+      "image_index": 0,
+      "page": 1,
+      "quality": "clean",
+      "text": "Submit expense reports by Friday"
+    },
+    {
+      "image_index": 1,
+      "page": 2,
+      "quality": "clean",
+      "text": "The server room door must stay locked"
+    }
+  ],
+  "ocr_pdf_03_clean.pdf": [
+    {
+      "image_index": 0,
+      "page": 1,
+      "quality": "clean",
+      "text": "Annual safety training starts in March"
+    }
+  ],
+  "ocr_pdf_04_clean.pdf": [
+    {
+      "image_index": 0,
+      "page": 1,
+      "quality": "clean",
+      "text": "Backup jobs run every night at two"
+    },
+    {
+      "image_index": 1,
+      "page": 2,
+      "quality": "clean",
+      "text": "Visitors must sign in at reception"
+    }
+  ],
+  "ocr_pdf_05_clean.pdf": [
+    {
+      "image_index": 0,
+      "page": 1,
+      "quality": "clean",
+      "text": "The new policy applies to all teams"
+    }
+  ],
+  "ocr_pdf_06_low.pdf": [
+    {
+      "image_index": 0,
+      "page": 1,
+      "quality": "low",
+      "text": "Project deadline moved to next Monday"
+    },
+    {
+      "image_index": 1,
+      "page": 2,
+      "quality": "low",
+      "text": "Customer support hours are nine to five"
+    }
+  ],
+  "ocr_pdf_07_low.pdf": [
+    {
+      "image_index": 0,
+      "page": 1,
+      "quality": "low",
+      "text": "Recycle paper in the blue containers"
+    }
+  ],
+  "ocr_pdf_08_low.pdf": [
+    {
+      "image_index": 0,
+      "page": 1,
+      "quality": "low",
+      "text": "Meeting notes are shared after each call"
+    },
+    {
+      "image_index": 1,
+      "page": 2,
+      "quality": "low",
+      "text": "Invoices above five thousand need approval"
+    }
+  ],
+  "ocr_pdf_09_low.pdf": [
+    {
+      "image_index": 0,
+      "page": 1,
+      "quality": "low",
+      "text": "Update your password every ninety days"
+    }
+  ],
+  "ocr_pdf_10_low.pdf": [
+    {
+      "image_index": 0,
+      "page": 1,
+      "quality": "low",
+      "text": "The library closes early on holidays"
+    },
+    {
+      "image_index": 1,
+      "page": 2,
+      "quality": "low",
+      "text": "Lab results are reviewed within two days"
+    }
+  ],
+  "ocr_docx_01_clean.docx": [
+    {
+      "image_index": 0,
+      "page": null,
+      "quality": "clean",
+      "text": "Parking permits renew in September"
+    }
+  ],
+  "ocr_docx_02_clean.docx": [
+    {
+      "image_index": 0,
+      "page": null,
+      "quality": "clean",
+      "text": "All laptops must use disk encryption"
+    },
+    {
+      "image_index": 1,
+      "page": null,
+      "quality": "clean",
+      "text": "Board meeting is held on the first Tuesday"
+    }
+  ],
+  "ocr_docx_03_clean.docx": [
+    {
+      "image_index": 0,
+      "page": null,
+      "quality": "clean",
+      "text": "Report broken equipment to facilities"
+    }
+  ],
+  "ocr_docx_04_clean.docx": [
+    {
+      "image_index": 0,
+      "page": null,
+      "quality": "clean",
+      "text": "Travel requests need manager approval"
+    },
+    {
+      "image_index": 1,
+      "page": null,
+      "quality": "clean",
+      "text": "Cafeteria menu changes every week"
+    }
+  ],
+  "ocr_docx_05_clean.docx": [
+    {
+      "image_index": 0,
+      "page": null,
+      "quality": "clean",
+      "text": "Emergency exits are marked in green"
+    }
+  ],
+  "ocr_docx_06_low.docx": [
+    {
+      "image_index": 0,
+      "page": null,
+      "quality": "low",
+      "text": "Printer toner is stored in room four"
+    },
+    {
+      "image_index": 1,
+      "page": null,
+      "quality": "low",
+      "text": "The audit covers the last fiscal year"
+    }
+  ],
+  "ocr_docx_07_low.docx": [
+    {
+      "image_index": 0,
+      "page": null,
+      "quality": "low",
+      "text": "Sales targets are reviewed each quarter"
+    }
+  ],
+  "ocr_docx_08_low.docx": [
+    {
+      "image_index": 0,
+      "page": null,
+      "quality": "low",
+      "text": "New staff receive badges on day one"
+    },
+    {
+      "image_index": 1,
+      "page": null,
+      "quality": "low",
+      "text": "Archive old files after five years"
+    }
+  ],
+  "ocr_docx_09_low.docx": [
+    {
+      "image_index": 0,
+      "page": null,
+      "quality": "low",
+      "text": "Network maintenance is planned for Sunday"
+    }
+  ],
+  "ocr_docx_10_low.docx": [
+    {
+      "image_index": 0,
+      "page": null,
+      "quality": "low",
+      "text": "Fire drills happen twice a year"
+    },
+    {
+      "image_index": 1,
+      "page": null,
+      "quality": "low",
+      "text": "Feedback forms close at the end of May"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ from backend.app.models.collection import Collection
 from backend.app.models.audit import SecurityAuditLog
 from backend.app.models.conversation import Conversation, Message
 from backend.app.models.fingerprint import DocumentFingerprint, DocumentFingerprintBand
+from backend.app.models.document_image import DocumentImage
 
 __all__ = [
     "Base",
@@ -19,4 +20,5 @@ __all__ = [
     "Message",
     "DocumentFingerprint",
     "DocumentFingerprintBand",
+    "DocumentImage",
 ]

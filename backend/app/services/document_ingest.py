@@ -17,11 +17,14 @@ from backend.app.services.chunking import split_text
 from backend.app.services.document_parser import (
     DocumentParserError,
     UnsupportedDocumentError,
+    extract_layout,
     extract_text,
 )
 from backend.app.services.embedding import EmbeddingError, embed_texts
 from backend.app.services import near_duplicate
 from backend.app.services.near_duplicate import NearDuplicateError
+from backend.app.services.document_images import clear_document_images, process_document_images, remove_image_files
+from backend.app.services.ocr_merge import chunks_from_segments, merge_layout, merged_text
 from backend.app.services.vector_store import Visibility, upsert_chunks
 
 logger = logging.getLogger(__name__)
@@ -31,7 +34,16 @@ class IngestError(RuntimeError):
     pass
 
 
+_OCR_SUFFIXES = (".pdf", ".docx")
+
+
+def _may_contain_images(document: Document) -> bool:
+    return Path(document.file_path or document.filename).suffix.lower() in _OCR_SUFFIXES
+
+
 async def index_document(db: AsyncSession, document: Document) -> Document:
+    # Captured up front: a rollback expires ORM attributes, which must not lazy-load later.
+    owner_id, document_id = document.user_id, document.id
     document.status = "processing"
     document.error_message = None
     await db.commit()
@@ -46,26 +58,51 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
             document.filename,
             cancel_event=cancel_event,
         )
-        # FR-081: compare with the caller's own and public documents before indexing.
-        fingerprint = near_duplicate.signature(text)
-        match = await near_duplicate.find_near_duplicate(db, document, fingerprint)
-        if match is not None:
-            raise NearDuplicateError(match)
+        # FR-058 – FR-061: OCR embedded images and merge their text in reading order.
+        segments = None
+        if settings.OCR_ENABLED and _may_contain_images(document):
+            await clear_document_images(db, document)
+            layout = await asyncio.to_thread(
+                extract_layout,
+                document.file_path,
+                document.mime_type,
+                document.filename,
+                cancel_event=cancel_event,
+            )
+            if layout.get("images"):
+                ocr_results = await process_document_images(db, document, layout)
+                segments = merge_layout(layout, ocr_results)
+        full_text = merged_text(segments) if segments else text
 
-        chunks = split_text(text)
-        if not chunks:
+        # FR-081: compare with the caller's own and public documents. Documents without any
+        # text (e.g. a scan whose images could not be read) are not fingerprinted, otherwise
+        # every such document would look identical.
+        fingerprint = None
+        if near_duplicate.shingles(full_text):
+            fingerprint = near_duplicate.signature(full_text)
+            match = await near_duplicate.find_near_duplicate(db, document, fingerprint)
+            if match is not None:
+                raise NearDuplicateError(match)
+
+        if segments:
+            chunk_items = chunks_from_segments(segments)
+        else:
+            chunk_items = [(piece, {"source_type": "text"}) for piece in split_text(text)]
+        if not chunk_items:
             raise IngestError("No extractable text found in document")
+        chunks = [piece for piece, _ in chunk_items]
 
         embeddings = await embed_texts(chunks)
         visibility: Visibility = "public" if document.visibility == "public" else "private"
         ids = [f"{document.id}:{index}" for index in range(len(chunks))]
         metadatas = [
             {
+                **extra,
                 "document_id": str(document.id),
                 "filename": document.filename,
                 "chunk_index": index,
             }
-            for index in range(len(chunks))
+            for index, (_, extra) in enumerate(chunk_items)
         ]
         upsert_chunks(
             user_id=document.user_id,
@@ -75,12 +112,14 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
             metadatas=metadatas,
             visibility=visibility,
         )
-        await near_duplicate.store_fingerprint(db, document, fingerprint)
+        if fingerprint is not None:
+            await near_duplicate.store_fingerprint(db, document, fingerprint)
         document.status = "indexed"
         document.error_message = None
     except NearDuplicateError as exc:
         # Recorded on the document, then re-raised so an upload can be rejected cleanly.
         await db.rollback()
+        remove_image_files(owner_id, document_id)
         document.status = "failed"
         document.error_message = str(exc)
         await db.commit()

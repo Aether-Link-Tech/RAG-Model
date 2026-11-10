@@ -200,6 +200,16 @@ def _check_vectors(report: Report, docs: dict[uuid.UUID, DocumentRecord], client
     return chunk_counts
 
 
+def _is_document_image(path: Path, root: Path, docs: dict[uuid.UUID, DocumentRecord]) -> bool:
+    """Extracted images (FR-058) live in <owner folder>/images/<document_id>/ of an existing document."""
+    doc_id = _uuid_or_none(path.parent.name)
+    doc = docs.get(doc_id) if doc_id else None
+    if doc is None:
+        return False
+    expected = (owner_folders(root, doc.user_id)[0] / "images" / str(doc.id)).resolve()
+    return path.parent == expected
+
+
 def owner_folders(root: Path, user_id: uuid.UUID) -> tuple[Path, ...]:
     """Folders a user's files may live in: the current layout <root>/users/<id>/documents
     (AL-139) and the legacy <root>/<id> used before it."""
@@ -226,7 +236,7 @@ def _check_files(report: Report, docs: dict[uuid.UUID, DocumentRecord], upload_d
         report.files_checked += 1
         if path.name.startswith(".") or path.name.endswith(_TRANSIENT_SUFFIXES):
             continue
-        if path.resolve() not in referenced:
+        if path.resolve() not in referenced and not _is_document_image(path.resolve(), root, docs):
             report.issues.append(Issue("orphan_file", "File on disk is not referenced by any document",
                                        path=str(path.resolve())))
 

@@ -443,6 +443,20 @@ failed with the same message. RLS on the fingerprint tables only exposes the cal
 public fingerprints, so another user's private document can never match or be named.
 Benchmark: 398 ms against 10,000 fingerprinted documents (requirement < 5 s).
 
+**OCR of images in documents (FR-058 – FR-063).** With `OCR_ENABLED=true`, PDF and DOCX files
+go through the parser sandbox a second time in *layout* mode (`PARSER_MODE=layout`), which
+returns text blocks and embedded images (base64, ≤ 40 images / 20 MB) in reading order with
+page and bounding box; all sandbox flags stay the same. Images are stored in the owner's
+folder (`<UPLOAD_DIR>/users/<id>/documents/images/<document_id>/`) and in `document_images`
+(owner-only RLS). Florence-2-base reads them **inside the backend process** (no external API;
+downloaded once into the Hugging Face cache) within `OCR_DOCUMENT_BUDGET_SECONDS` (30 s) per
+document. OCR text is inserted at the image's position (`services/ocr_merge.py`); chunks carry
+`source_type` (`text` / `ocr`), `page`, `bbox`, `image_id` and `ocr_confidence`, and search
+results expose them so the UI can show "source: image on page X". A failed, corrupt or timed-out
+image is skipped, logged and written to the audit log (`ocr_image_skipped`); the document is
+still indexed. There is deliberately no second OCR model yet. Accuracy on the test set:
+`docs/OCR_ACCURACY.md` (`backend/tests/fixtures/ocr/evaluate.py`).
+
 **Integrity check (FR-075).** `python -m backend.app.scripts.integrity_check [--repair] [--json report.json]`
 compares PostgreSQL, ChromaDB and file storage: orphan or misplaced vectors (critical if a
 private chunk is in the public collection or another user's collection), missing files,

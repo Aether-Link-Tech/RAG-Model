@@ -7,7 +7,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.deps import get_current_user
+from backend.app.api.v1 import auth as auth_api
 from backend.app.api.v1.auth import INVALID_CREDENTIALS
+from backend.app.core.config import settings
+from backend.app.core.crypto import email_index
 from backend.app.core.security import create_access_token, create_refresh_token, hash_password
 from backend.app.main import app
 from backend.app.models.user import User
@@ -229,4 +232,136 @@ async def test_status_read_failure_fails_closed(
         json={"refresh_token": refresh_tok},
     )
     assert res_refresh.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_quarantined_login_matches_wrong_password_headers_and_redis_writes(
+    async_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    verified_user: User,
+    fake_redis,
+    monkeypatch,
+):
+    """7. Compare quarantined login vs wrong-password login on status code, body,
+    all response headers (including X-Captcha-Required), password-hashing work,
+    and Redis write count (0 writes for quarantined vs >0 for wrong password)."""
+    q_user_id = uuid.uuid4()
+    quarantined_user = User(
+        id=q_user_id,
+        email=f"quarantine-cmp-{q_user_id.hex[:8]}@example.com",
+        hashed_password=hash_password(VALID_PASSWORD),
+        role="user",
+        status="active",
+        is_verified=True,
+        is_deleted=False,
+    )
+    db_session.add(quarantined_user)
+    await db_session.commit()
+    await _set_user_status(q_user_id, "quarantined")
+
+    # Track Redis write commands (direct and pipelined)
+    read_cmds = {"GET", "TTL", "PTTL", "EXISTS", "SCAN", "MGET"}
+    redis_writes: list[str] = []
+    orig_execute = fake_redis.execute_command
+    orig_pipeline = fake_redis.pipeline
+
+    async def tracked_execute(*args, **kwargs):
+        cmd = str(args[0]).upper()
+        if cmd not in read_cmds:
+            redis_writes.append(cmd)
+        return await orig_execute(*args, **kwargs)
+
+    def tracked_pipeline(*args, **kwargs):
+        pipe = orig_pipeline(*args, **kwargs)
+        orig_pipe_execute = pipe.execute
+
+        async def tracked_pipe_execute(*pargs, **pkwargs):
+            for cmd_args, _ in pipe.command_stack:
+                cmd = str(cmd_args[0]).upper()
+                if cmd not in read_cmds:
+                    redis_writes.append(cmd)
+            return await orig_pipe_execute(*pargs, **pkwargs)
+
+        pipe.execute = tracked_pipe_execute
+        return pipe
+
+    monkeypatch.setattr(fake_redis, "execute_command", tracked_execute)
+    monkeypatch.setattr(fake_redis, "pipeline", tracked_pipeline)
+
+    # Track verify_password invocations to confirm same work up to rejection
+    verify_calls = 0
+    real_verify_password = auth_api.verify_password
+
+    def tracked_verify_password(plain: str, hashed: str) -> bool:
+        nonlocal verify_calls
+        verify_calls += 1
+        return real_verify_password(plain, hashed)
+
+    monkeypatch.setattr(auth_api, "verify_password", tracked_verify_password)
+
+    try:
+        # Case A: Below CAPTCHA threshold (failures == 0)
+        redis_writes.clear()
+        wrong_res = await async_client.post(
+            "/api/v1/auth/login",
+            json={"email": verified_user.email, "password": "WrongPassword!999"},
+        )
+        wrong_writes = list(redis_writes)
+
+        redis_writes.clear()
+        quar_res = await async_client.post(
+            "/api/v1/auth/login",
+            json={"email": quarantined_user.email, "password": VALID_PASSWORD},
+        )
+        quar_writes = list(redis_writes)
+
+        assert quar_res.status_code == wrong_res.status_code == 401
+        assert quar_res.json() == wrong_res.json() == {"detail": INVALID_CREDENTIALS}
+        assert dict(quar_res.headers) == dict(wrong_res.headers)
+        assert "x-captcha-required" not in quar_res.headers
+        assert len(wrong_writes) > 0
+        assert len(quar_writes) == 0
+
+        # Case B: At CAPTCHA threshold (failures == LOGIN_CAPTCHA_AFTER_FAILURES)
+        threshold = settings.LOGIN_CAPTCHA_AFTER_FAILURES
+        await fake_redis.set(f"login_fail:{email_index(verified_user.email)}", str(threshold), ex=900)
+        await fake_redis.set(f"login_fail:{email_index(quarantined_user.email)}", str(threshold), ex=900)
+
+        redis_writes.clear()
+        wrong_cap_res = await async_client.post(
+            "/api/v1/auth/login",
+            json={
+                "email": verified_user.email,
+                "password": "WrongPassword!999",
+                "captcha_token": "test-captcha",
+            },
+        )
+        wrong_cap_writes = list(redis_writes)
+
+        redis_writes.clear()
+        quar_cap_res = await async_client.post(
+            "/api/v1/auth/login",
+            json={
+                "email": quarantined_user.email,
+                "password": VALID_PASSWORD,
+                "captcha_token": "test-captcha",
+            },
+        )
+        quar_cap_writes = list(redis_writes)
+
+        assert quar_cap_res.status_code == wrong_cap_res.status_code == 401
+        assert quar_cap_res.json() == wrong_cap_res.json() == {"detail": INVALID_CREDENTIALS}
+        assert dict(quar_cap_res.headers) == dict(wrong_cap_res.headers)
+        assert (
+            quar_cap_res.headers.get("x-captcha-required")
+            == wrong_cap_res.headers.get("x-captcha-required")
+            == "true"
+        )
+        assert len(wrong_cap_writes) > 0
+        assert len(quar_cap_writes) == 0
+
+        assert verify_calls == 4
+    finally:
+        await purge_test_users(q_user_id)
+
 

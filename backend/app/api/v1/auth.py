@@ -83,11 +83,16 @@ def _locked(seconds: int) -> HTTPException:
     )
 
 
-def _unauthorized(detail: str = INVALID_CREDENTIALS) -> HTTPException:
+def _unauthorized(
+    detail: str = INVALID_CREDENTIALS, *, captcha_required: bool = False
+) -> HTTPException:
+    headers = {"WWW-Authenticate": "Bearer"}
+    if captcha_required:
+        headers.update(CAPTCHA_HEADER)
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=detail,
-        headers={"WWW-Authenticate": "Bearer"},
+        headers=headers,
     )
 
 
@@ -234,31 +239,20 @@ async def login(payload: LoginRequest, request: Request, db: DbSession) -> Token
                 raise _locked(await lockout_seconds_remaining(email))
         except AuthStateUnavailableError as exc:
             raise _service_unavailable(exc) from exc
-        if failures >= settings.LOGIN_CAPTCHA_AFTER_FAILURES:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=INVALID_CREDENTIALS,
-                headers={"WWW-Authenticate": "Bearer", **CAPTCHA_HEADER},
-            )
-        raise _unauthorized()
+        raise _unauthorized(captcha_required=failures >= settings.LOGIN_CAPTCHA_AFTER_FAILURES)
 
-    # FR-074 / AL-266: Quarantined accounts get the same generic response as a
-    # wrong password (same status code and body) so account quarantine status is never leaked.
-    # Quarantined attempts do not count toward failed-login lockout (the password was valid,
-    # and the account is already administratively blocked). Fail closed if status cannot be read.
+    # FR-074 / AL-266: Checked after verify_password so a quarantined login performs
+    # the same DB lookup and password-hashing work as a wrong-password login up to
+    # rejection. Quarantined logins keep the lockout exemption (no record_failed_login,
+    # no reset_failed_logins) and return the same 401 response and headers.
+    # Fail closed if status cannot be read.
     try:
         user_status = getattr(user, "status", None)
     except Exception:
         user_status = None
 
     if user_status != "active":
-        if failures >= settings.LOGIN_CAPTCHA_AFTER_FAILURES:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=INVALID_CREDENTIALS,
-                headers={"WWW-Authenticate": "Bearer", **CAPTCHA_HEADER},
-            )
-        raise _unauthorized()
+        raise _unauthorized(captcha_required=failures >= settings.LOGIN_CAPTCHA_AFTER_FAILURES)
 
     try:
         await reset_failed_logins(email)

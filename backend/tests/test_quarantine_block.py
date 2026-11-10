@@ -229,3 +229,4 @@ async def test_status_read_failure_fails_closed(
         json={"refresh_token": refresh_tok},
     )
     assert res_refresh.status_code == 401
+

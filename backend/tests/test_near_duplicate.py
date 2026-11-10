@@ -255,3 +255,21 @@ async def test_lookup_stays_fast_with_many_documents(test_user):
     assert match is None
     print(f"near-duplicate check: {elapsed * 1000:.0f} ms against {n} fingerprinted documents")
     assert elapsed < limit, f"near-duplicate check took {elapsed:.2f}s for {n} documents"
+
+
+async def test_published_documents_keep_their_fingerprint(async_client, test_user, test_user_2, real_indexing):
+    """Publishing (AL-185) copies vectors instead of re-indexing; the fingerprint must follow."""
+    original, near = pair_with_jaccard(0.8)
+    private = await _upload(async_client, test_user, "policy-handbook.txt", original)
+    assert private.status_code == 201 and private.json()["status"] == "indexed"
+
+    published = await async_client.post(f"/api/v1/documents/{private.json()['id']}/publish", headers=bearer(test_user))
+    assert published.status_code in (200, 201), published.text
+    public_id = published.json()["id"]
+    assert (await _privileged(
+        "SELECT visibility FROM document_fingerprints WHERE document_id = :d", d=uuid.UUID(public_id)
+    )).scalar_one() == "public"
+
+    res = await _upload(async_client, test_user_2, "copy.txt", near)
+    assert res.status_code == 409 and "policy-handbook.txt" in res.json()["detail"] and "public" in res.json()["detail"]
+    await _privileged("DELETE FROM security_audit_log WHERE user_id = ANY(:u)", u=[test_user.id, test_user_2.id])

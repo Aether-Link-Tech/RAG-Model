@@ -242,6 +242,24 @@ async def login(payload: LoginRequest, request: Request, db: DbSession) -> Token
             )
         raise _unauthorized()
 
+    # FR-074 / AL-266: Quarantined accounts get the same generic response as a
+    # wrong password (same status code and body) so account quarantine status is never leaked.
+    # Quarantined attempts do not count toward failed-login lockout (the password was valid,
+    # and the account is already administratively blocked). Fail closed if status cannot be read.
+    try:
+        user_status = getattr(user, "status", None)
+    except Exception:
+        user_status = None
+
+    if user_status != "active":
+        if failures >= settings.LOGIN_CAPTCHA_AFTER_FAILURES:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=INVALID_CREDENTIALS,
+                headers={"WWW-Authenticate": "Bearer", **CAPTCHA_HEADER},
+            )
+        raise _unauthorized()
+
     try:
         await reset_failed_logins(email)
     except AuthStateUnavailableError as exc:
@@ -282,7 +300,12 @@ async def refresh_tokens(payload: RefreshRequest, db: DbSession) -> TokenRespons
         select(User).where(User.id == claims["user_id"], User.is_deleted.is_(False))
     )
     user = result.scalar_one_or_none()
-    if user is None or not user.is_verified:
+    try:
+        user_status = getattr(user, "status", None) if user is not None else None
+    except Exception:
+        user_status = None
+
+    if user is None or not user.is_verified or user_status != "active":
         raise _unauthorized("Invalid or expired refresh token.")
 
     try:

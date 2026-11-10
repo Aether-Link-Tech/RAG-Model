@@ -136,14 +136,8 @@ class Settings(BaseConfig):
     # Layout mode returns embedded images as base64 (FR-058), so it needs a larger cap.
     PARSER_LAYOUT_MAX_OUTPUT_BYTES: int = int(os.getenv("PARSER_LAYOUT_MAX_OUTPUT_BYTES", str(40 * 1024 * 1024)))
 
-    # OCR of images inside PDF / DOCX (FR-058 – FR-063). Off unless an OCR worker is configured.
+    # OCR of images inside PDF / DOCX (FR-058 – FR-063), run in-process with local models.
     OCR_ENABLED: bool = os.getenv("OCR_ENABLED", "False").lower() in ("true", "1")
-    # "local" = load the model in the backend process (no extra service), "worker" = call
-    # the docker/ocr worker at OCR_SERVICE_URL.
-    OCR_BACKEND: str = os.getenv("OCR_BACKEND", "local")
-    # "florence" = Florence-2-base with EasyOCR fallback, "easyocr" = EasyOCR only.
-    OCR_ENGINE: str = os.getenv("OCR_ENGINE", "florence")
-    OCR_SERVICE_URL: str = os.getenv("OCR_SERVICE_URL", "http://localhost:8090")
     OCR_DOCUMENT_BUDGET_SECONDS: float = float(os.getenv("OCR_DOCUMENT_BUDGET_SECONDS", "30"))
     OCR_BATCH_SIZE: int = int(os.getenv("OCR_BATCH_SIZE", "4"))
 

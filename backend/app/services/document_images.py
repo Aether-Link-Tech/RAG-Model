@@ -109,7 +109,7 @@ async def process_document_images(db: AsyncSession, document: Document, layout: 
 
     try:
         client = get_ocr_client()
-    except Exception as exc:  # e.g. unknown OCR_ENGINE: skip images, never fail the document
+    except Exception as exc:  # e.g. model files missing: skip images, never fail the document
         logger.error("OCR client unavailable: %s", exc)
         client = None
     deadline = time.monotonic() + settings.OCR_DOCUMENT_BUDGET_SECONDS

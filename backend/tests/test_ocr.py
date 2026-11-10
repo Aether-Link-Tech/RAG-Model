@@ -15,7 +15,6 @@ import uuid
 from pathlib import Path
 
 import fitz
-import httpx
 import pytest
 from sqlalchemy import select, text
 
@@ -27,7 +26,7 @@ from backend.app.models.document_image import DocumentImage
 from backend.app.services import document_ingest, ocr
 from backend.app.services.document_images import ImageOCR, image_folder
 from backend.app.services.document_parser import extract_layout
-from backend.app.services.ocr import HttpOCRClient, OCRFailure, OCRText
+from backend.app.services.ocr import OCRFailure, OCRText
 from backend.app.services.ocr_merge import chunks_from_segments, merge_layout
 from backend.tests.conftest import TestingSessionLocal, _CleanupSessionLocal, bearer
 
@@ -184,15 +183,19 @@ def test_retrieval_source_fields():
     assert _source_fields({})["source_type"] == "text"
 
 
-# --- FR-059 / AL-242: OCR worker logic (fake engines) and HTTP client ----------------
+# --- FR-059 / AL-242: OCR engine logic (fake engines) -----------------------------------
 
 
 class _Engine:
-    def __init__(self, name, fail=False):
-        self.name, self.fail = name, fail
+    """Fake model. fail=True always crashes; bad_width crashes on any batch containing it."""
+
+    def __init__(self, name, fail=False, bad_width=None):
+        self.name, self.fail, self.bad_width = name, fail, bad_width
+        self.calls = 0
 
     def recognize(self, images):
-        if self.fail:
+        self.calls += 1
+        if self.fail or any(img.size[0] == self.bad_width for img in images):
             raise RuntimeError("model crashed")
         return [(f"{self.name}:{img.size[0]}", 0.9) for img in images]
 
@@ -205,50 +208,38 @@ def _png(width=120):
     return buf.getvalue()
 
 
-def test_worker_uses_primary_engine_in_batch():
-    service = engines.OCRService(lambda: _Engine("primary"), lambda: _Engine("fallback"))
+def test_engine_processes_images_in_one_batch():
+    model = _Engine("florence")
+    service = engines.OCRService(lambda: model)
     results = service.recognize([_png(100), _png(140)], timeout_seconds=10)
-    assert [r.text for r in results] == ["primary:100", "primary:140"]
-    assert all(r.engine == "primary" and r.error is None for r in results)
+    assert [r.text for r in results] == ["florence:100", "florence:140"]
+    assert all(r.engine == "florence" and r.error is None for r in results) and model.calls == 1
 
 
-def test_worker_falls_back_when_primary_fails():
-    service = engines.OCRService(lambda: _Engine("primary", fail=True), lambda: _Engine("fallback"))
-    assert [r.engine for r in service.recognize([_png()], timeout_seconds=10)] == ["fallback"]
+def test_failed_batch_is_retried_image_by_image():
+    """One image that crashes the model must not lose the others."""
+    service = engines.OCRService(lambda: _Engine("florence", bad_width=140))
+    results = service.recognize([_png(100), _png(140), _png(180)], timeout_seconds=10)
+    assert [r.text for r in results] == ["florence:100", "", "florence:180"]
+    assert results[1].error == "OCR failed: RuntimeError"
 
 
-def test_worker_falls_back_when_primary_cannot_load():
+def test_model_that_cannot_load_reports_every_image():
     def broken():
         raise OSError("model files missing")
 
-    service = engines.OCRService(broken, lambda: _Engine("fallback"))
-    result = service.recognize([_png()], timeout_seconds=10)[0]
-    assert result.engine == "fallback" and "model files missing" in service.status()["primary_error"]
+    service = engines.OCRService(broken)
+    results = service.recognize([_png(), _png()], timeout_seconds=10)
+    assert {r.error for r in results} == {"OCR model unavailable"}
+    assert "model files missing" in service.status()["load_error"]
 
 
-def test_worker_reports_corrupt_images_and_timeouts_per_image():
-    service = engines.OCRService(lambda: _Engine("primary", fail=True), lambda: _Engine("fallback"))
+def test_engine_reports_corrupt_images_and_timeouts_per_image():
+    service = engines.OCRService(lambda: _Engine("florence"))
     results = service.recognize([b"not an image", _png()], timeout_seconds=10)
-    assert results[0].error == "Corrupt or unsupported image" and results[1].engine == "fallback"
-    timed_out = service.recognize([_png()], timeout_seconds=0)  # deadline already passed
-    assert timed_out[0].error == "OCR timed out"
-
-
-async def test_http_client_maps_results_and_outages(monkeypatch):
-    def handler(request):
-        body = json.loads(request.content)
-        assert len(body["images"]) == 2 and base64.b64decode(body["images"][0])
-        return httpx.Response(200, json={"results": [{"text": "hi", "confidence": 0.9, "engine": "florence-2-base"},
-                                                     {"error": "Corrupt or unsupported image"}]})
-
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
-    out = await HttpOCRClient("http://ocr").recognize([b"a", b"b"], timeout=5)
-    assert out == [OCRText("hi", 0.9, "florence-2-base"), OCRFailure("Corrupt or unsupported image")]
-
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_client(
-        transport=httpx.MockTransport(lambda r: httpx.Response(503)), **kw))
-    assert await HttpOCRClient("http://ocr").recognize([b"a"], timeout=5) == [OCRFailure("OCR service unavailable")]
+    assert results[0].error == "Corrupt or unsupported image" and results[1].engine == "florence"
+    timed_out = engines.OCRService(lambda: _Engine("florence", fail=True)).recognize([_png()], timeout_seconds=0)
+    assert timed_out[0].error == "OCR timed out"  # deadline already passed
 
 
 # --- End to end: upload -> OCR -> chunks, storage, isolation, fallback ----------------
@@ -402,43 +393,27 @@ async def test_ocr_disabled_keeps_the_old_behaviour(async_client, test_user, ocr
     assert await _images_for(test_user, res.json()["id"]) == []
 
 
-# --- OCR_BACKEND / OCR_ENGINE choices (local in-process vs worker, florence vs easyocr) ----
-
-
-def test_engine_choices():
-    florence = engines.build_service("florence")
-    assert florence._primary_factory is engines.Florence2Engine and florence._fallback_factory is engines.EasyOCREngine
-    easy = engines.build_service("easyocr")
-    assert easy._primary_factory is engines.EasyOCREngine and easy._fallback_factory is None
-    with pytest.raises(ValueError):
-        engines.build_service("cloud-api")
-
-
-def test_easyocr_only_has_no_fallback():
-    service = engines.OCRService(lambda: _Engine("easyocr", fail=True), None)
-    assert service.recognize([_png()], timeout_seconds=10)[0].error == "No OCR engine available"
-
-
-def test_client_choice_follows_settings(monkeypatch):
-    monkeypatch.setattr(settings, "OCR_BACKEND", "worker")
-    assert isinstance(ocr.get_ocr_client(), HttpOCRClient)
-    monkeypatch.setattr(settings, "OCR_BACKEND", "local")
-    monkeypatch.setattr(settings, "OCR_ENGINE", "easyocr")
-    local = ocr.get_ocr_client()
-    assert isinstance(local, ocr.LocalOCRClient) and ocr.get_ocr_client() is local  # model loaded once
+# --- In-process client ---------------------------------------------------------------
 
 
 async def test_local_client_maps_results():
     client = ocr.LocalOCRClient.__new__(ocr.LocalOCRClient)
-    client.service = engines.OCRService(lambda: _Engine("primary"), None)
+    client.service = engines.OCRService(lambda: _Engine("primary"))
     out = await client.recognize([_png(90), b"broken"], timeout=10)
     assert out == [OCRText("primary:90", 0.9, "primary"), OCRFailure("Corrupt or unsupported image")]
 
 
-async def test_misconfigured_engine_skips_images_but_indexes(async_client, test_user, ocr_pipeline, monkeypatch):
+def test_client_is_loaded_once_per_process():
     ocr.set_ocr_client(None)
-    monkeypatch.setattr(settings, "OCR_BACKEND", "local")
-    monkeypatch.setattr(settings, "OCR_ENGINE", "no-such-engine")
+    assert ocr.get_ocr_client() is ocr.get_ocr_client()
+
+
+async def test_unavailable_models_skip_images_but_index(async_client, test_user, ocr_pipeline, monkeypatch):
+    def broken():
+        raise RuntimeError("model files missing")
+
+    monkeypatch.setattr(ocr, "get_ocr_client", broken)
+    monkeypatch.setattr("backend.app.services.document_images.get_ocr_client", broken)
     res = await upload(async_client, test_user, "report.pdf", (EXTRACTION / "images_3_on_2_pages.pdf").read_bytes(), PDF_MIME)
     try:
         assert res.json()["status"] == "indexed"

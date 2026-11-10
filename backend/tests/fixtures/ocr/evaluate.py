@@ -1,9 +1,9 @@
 """OCR accuracy on the 20-document test set (FR-062 / AL-249).
 
-    python backend/tests/fixtures/ocr/evaluate.py            # needs the OCR models (see docker/ocr)
+    python backend/tests/fixtures/ocr/evaluate.py   # first run downloads Florence-2-base (~0.5 GB)
 
-Extracts images with the parser's layout mode, runs the real OCR service (Florence-2-base,
-EasyOCR fallback), compares with ground_truth.json and writes docs/OCR_ACCURACY.md.
+Extracts images with the parser's layout mode, runs the real OCR model (Florence-2-base,
+in-process), compares with ground_truth.json and writes docs/OCR_ACCURACY.md.
 Character accuracy = 1 - edit distance / length of the ground truth, after lower-casing
 and collapsing whitespace (so layout spacing does not count as an error).
 """
@@ -52,8 +52,7 @@ def char_accuracy(predicted: str, truth: str) -> float:
 def main() -> int:
     runner = _load("parser_runner", REPO / "docker" / "parser" / "runner.py")
     engines = _load("ocr_engines", REPO / "backend" / "app" / "services" / "ocr_engines.py")
-    engine = sys.argv[1] if len(sys.argv) > 1 else "florence"
-    service = engines.build_service(engine)
+    service = engines.OCRService()
     truth = json.loads((HERE / "ground_truth.json").read_text(encoding="utf-8"))
 
     rows, per_doc = [], []

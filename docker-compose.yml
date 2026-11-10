@@ -112,17 +112,9 @@ services:
       SMTP_PORT: "1025"
       SMTP_USE_TLS: "false"
       EMAIL_VERIFICATION_URL: ${EMAIL_VERIFICATION_URL:-https://localhost/verify-email}
-      # OCR of images in PDF / DOCX (FR-058 – FR-063). Without the worker every image is
-      # skipped (and logged); documents are still indexed.
+      # OCR of images in PDF / DOCX (FR-058 – FR-063), in-process with local models
+      # (Florence-2-base, EasyOCR fallback), cached in hf_cache after the first download.
       OCR_ENABLED: ${OCR_ENABLED:-true}
-      # local = model runs inside the backend (default, no extra service); worker = ocr-worker
-      OCR_BACKEND: ${OCR_BACKEND:-local}
-      # florence = Florence-2-base + EasyOCR fallback; easyocr = EasyOCR only (smaller, faster)
-      OCR_ENGINE: ${OCR_ENGINE:-florence}
-      OCR_SERVICE_URL: http://ocr-worker:8090
-    networks:
-      - default
-      - ocr_internal
     volumes:
       - uploads_data:/data/uploads
       - quarantine_data:/data/quarantine
@@ -173,38 +165,6 @@ services:
       - "127.0.0.1:8025:8025"
       - "127.0.0.1:1025:1025"
 
-  ocr-worker:
-    # Optional OCR service (OCR_BACKEND=worker). By default the backend runs OCR in-process.
-    # Internal network only: no internet. Start with:
-    #   docker compose --profile ocr-setup run --rm ocr-model-download   (first time, ~0.6 GB)
-    #   OCR_BACKEND=worker docker compose --profile ocr-worker up -d
-    build:
-      context: .
-      dockerfile: docker/ocr/Dockerfile
-    image: rag-ocr-worker:latest
-    container_name: rag_ocr_worker
-    profiles: ["ocr-worker"]
-    restart: unless-stopped
-    networks:
-      - ocr_internal
-    environment:
-      HF_HUB_OFFLINE: "1"
-      TRANSFORMERS_OFFLINE: "1"
-      OCR_ENGINE: ${OCR_ENGINE:-florence}
-    volumes:
-      - ocr_models:/models:ro
-    mem_limit: 4g
-    cpus: 2
-
-  ocr-model-download:
-    # One-off job with internet access that fills the ocr_models volume.
-    image: rag-ocr-worker:latest
-    profiles: ["ocr-setup"]
-    user: "0:0"
-    volumes:
-      - ocr_models:/models
-    command: ["python", "/app/download.py"]
-
   integrity-check:
     # FR-075 / AL-270: daily cross-layer check (PostgreSQL vs ChromaDB vs file storage).
     # Opt-in:  docker compose --profile ops up -d integrity-check
@@ -243,10 +203,3 @@ volumes:
   caddy_data:
   caddy_config:
   integrity_reports:
-  ocr_models:
-
-networks:
-  default:
-  ocr_internal:
-    # No route to the internet: the OCR worker can only talk to the backend.
-    internal: true

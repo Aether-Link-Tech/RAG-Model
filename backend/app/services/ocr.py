@@ -1,14 +1,19 @@
-"""Client for the OCR worker (FR-059 / AL-239, AL-240).
+"""OCR clients (FR-059 / AL-239, AL-240). No cloud APIs: every model runs locally.
 
-The OCR models (Florence-2-base, EasyOCR fallback) run in a separate container
-(docker/ocr) on an internal network without internet access. The backend sends image
-bytes in batches and gets text + confidence per image. Any failure is reported per
-image as OCRFailure, never raised for a single image, so the pipeline can skip it
-(FR-063).
+OCR_BACKEND chooses where the model runs:
+  * "local" (default): LocalOCRClient loads the model inside the backend process (no extra
+    service; the model is downloaded once into the Hugging Face cache).
+  * "worker": HttpOCRClient calls the docker/ocr worker on an internal network.
+OCR_ENGINE chooses the model ("florence" or "easyocr", see ocr_engines.py).
+
+Any failure is reported per image as OCRFailure, never raised for a single image, so the
+pipeline can skip it (FR-063).
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+import threading
 from dataclasses import dataclass
 from typing import Protocol, Sequence, Union
 
@@ -66,11 +71,33 @@ class HttpOCRClient:
         return outcomes
 
 
+class LocalOCRClient:
+    """Runs the OCR model in-process (in a thread, one inference at a time)."""
+
+    def __init__(self, engine: str):
+        from backend.app.services.ocr_engines import build_service
+
+        self.service = build_service(engine)
+
+    async def recognize(self, images: Sequence[bytes], timeout: float) -> list[OCROutcome]:
+        results = await asyncio.to_thread(self.service.recognize, list(images), timeout)
+        return [OCRFailure(r.error) if r.error else OCRText(r.text, r.confidence, r.engine) for r in results]
+
+
 _client: OCRClient | None = None
+_local_clients: dict[str, LocalOCRClient] = {}
+_local_lock = threading.Lock()
 
 
 def get_ocr_client() -> OCRClient:
-    return _client or HttpOCRClient(settings.OCR_SERVICE_URL)
+    if _client is not None:
+        return _client
+    if settings.OCR_BACKEND == "worker":
+        return HttpOCRClient(settings.OCR_SERVICE_URL)
+    with _local_lock:  # load each model once per process
+        if settings.OCR_ENGINE not in _local_clients:
+            _local_clients[settings.OCR_ENGINE] = LocalOCRClient(settings.OCR_ENGINE)
+        return _local_clients[settings.OCR_ENGINE]
 
 
 def set_ocr_client(client: OCRClient | None) -> None:

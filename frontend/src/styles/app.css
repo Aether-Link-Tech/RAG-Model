@@ -722,6 +722,7 @@
 .event-badge--replace_rejected { background: rgb(245 158 11 / 14%); color: #a15c07; }
 .event-badge--access_denied { background: rgb(22 119 255 / 10%); color: var(--blue-dark); }
 .event-badge--download_blocked { background: rgb(15 35 70 / 9%); color: var(--navy-2); }
+.event-badge--ocr_image_skipped { background: rgb(124 58 237 / 10%); color: #6d28d9; }
 .audit-pager { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; color: var(--muted); font-size: 13px; }
 .audit-pager > div { display: flex; gap: 4px; }
 .audit-skeleton { display: grid; gap: 10px; }

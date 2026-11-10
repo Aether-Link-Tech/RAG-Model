@@ -107,13 +107,21 @@ async def process_document_images(db: AsyncSession, document: Document, layout: 
             results[index].status, results[index].error = "skipped", "Image data is missing or corrupt"
     db.add_all(rows.values())
 
-    client = get_ocr_client()
+    try:
+        client = get_ocr_client()
+    except Exception as exc:  # e.g. unknown OCR_ENGINE: skip images, never fail the document
+        logger.error("OCR client unavailable: %s", exc)
+        client = None
     deadline = time.monotonic() + settings.OCR_DOCUMENT_BUDGET_SECONDS
     pending = list(payloads)
     batch = max(1, settings.OCR_BATCH_SIZE)
     for start in range(0, len(pending), batch):
         indexes = pending[start:start + batch]
         remaining = deadline - time.monotonic()
+        if client is None:
+            for index in indexes:
+                results[index].status, results[index].error = "skipped", "OCR is not configured correctly"
+            continue
         if remaining <= 0:
             for index in indexes:
                 results[index].status, results[index].error = "skipped", "OCR time budget for the document was used up"

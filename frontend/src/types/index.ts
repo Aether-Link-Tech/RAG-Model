@@ -35,7 +35,12 @@ export interface Collection {
 }
 
 // Mirrors AuditLogEntry / AuditLogPage in backend/app/api/v1/admin.py
-export type AuditEventType = 'upload_rejected' | 'replace_rejected' | 'access_denied' | 'download_blocked';
+export type AuditEventType =
+  | 'upload_rejected'
+  | 'replace_rejected'
+  | 'access_denied'
+  | 'download_blocked'
+  | 'ocr_image_skipped';
 
 export interface AuditLogEntry {
   id: string;

@@ -31,7 +31,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.models.document import Document
-from backend.app.services import audit_log
+from backend.app.models.fingerprint import DocumentFingerprint
+from backend.app.services import audit_log, near_duplicate
 from backend.app.services.document_ingest import (
     UnsafeStoragePathError,
     build_storage_path,
@@ -170,6 +171,14 @@ async def publish_private_document(
         _remove_file(new_path)
         raise PublishError(status.HTTP_500_INTERNAL_SERVER_ERROR, COPY_FAILED_DETAIL) from exc
 
+    # FR-081: keep the near-duplicate fingerprint. Deleting the private row deletes its
+    # fingerprint too, and copied vectors are not re-indexed, so re-attach it below.
+    fingerprint = (
+        await db.execute(
+            select(DocumentFingerprint.signature).where(DocumentFingerprint.document_id == old_id)
+        )
+    ).scalar_one_or_none()
+
     # --- 3. publish_document(): inserts the public row and deletes the private row.
     try:
         await db.execute(
@@ -215,6 +224,8 @@ async def publish_private_document(
             # Nothing to copy (e.g. the private index was lost): index from the new file.
             new_document = await index_document(db, new_document)
             indexed = new_document.status == "indexed"
+        elif fingerprint is not None:
+            await _keep_fingerprint(db, new_document, fingerprint)
     except Exception:
         logger.exception(
             "Publish: public indexing failed for new document %s (old document %s; "
@@ -261,6 +272,16 @@ async def publish_private_document(
 
     await _audit_published(owner_id, audit_filename, old_id, new_id, client_ip)
     return PublishResult(document=new_document, warning=warning)
+
+
+async def _keep_fingerprint(db: AsyncSession, document: Document, signature: bytes) -> None:
+    """Store the published copy's fingerprint (now public) so later uploads are compared with it."""
+    try:
+        await near_duplicate.store_fingerprint(db, document, near_duplicate.from_bytes(signature))
+        await db.commit()
+    except Exception:  # never fail a publish over the duplicate index
+        logger.exception("Publish: could not keep the near-duplicate fingerprint for %s", document.id)
+        await _safe_rollback(db)
 
 
 async def _audit_published(

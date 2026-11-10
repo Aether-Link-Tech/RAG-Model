@@ -5,7 +5,7 @@ compare against both); INSERT / UPDATE / DELETE are owner-only. Another user's p
 fingerprints are invisible, so they can never match or be named.
 
 Revision ID: 9c3d4e5f6a7b
-Revises: 9b2c3d4e5f6a
+Revises: 26d21e70da5d
 Create Date: 2026-11-09 10:00:00.000000
 """
 from typing import Sequence, Union
@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from backend.app.db.rls_policies import CURRENT_USER, app_role, owner_condition
 
 revision: str = "9c3d4e5f6a7b"
-down_revision: Union[str, Sequence[str], None] = "9b2c3d4e5f6a"
+down_revision: Union[str, Sequence[str], None] = "26d21e70da5d"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

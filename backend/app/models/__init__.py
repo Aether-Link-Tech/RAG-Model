@@ -5,6 +5,7 @@ from backend.app.models.role import Role, UserRoleAssignment
 from backend.app.models.collection import Collection
 from backend.app.models.audit import SecurityAuditLog
 from backend.app.models.conversation import Conversation, Message
+from backend.app.models.fingerprint import DocumentFingerprint, DocumentFingerprintBand
 
 __all__ = [
     "Base",
@@ -16,4 +17,6 @@ __all__ = [
     "SecurityAuditLog",
     "Conversation",
     "Message",
+    "DocumentFingerprint",
+    "DocumentFingerprintBand",
 ]

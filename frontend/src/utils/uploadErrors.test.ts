@@ -33,6 +33,14 @@ describe('describeUploadError (FR-068)', () => {
     expect(r.reason).toContain('already exists');
   });
 
+  it('names the existing document for near-duplicates (FR-081)', () => {
+    const r = describeUploadError(
+      httpError(409, 'A public document with very similar content already exists (78% similar): “handbook.pdf”. You can use that document.'),
+    );
+    expect(r).toMatchObject({ kind: 'duplicate', title: 'Similar document already exists' });
+    expect(r.reason).toContain('handbook.pdf');
+  });
+
   it('reports network failures as retryable', () => {
     const r = describeUploadError(Object.assign(new Error('Network Error'), { isAxiosError: true }));
     expect(r).toMatchObject({ kind: 'network', retryable: true });

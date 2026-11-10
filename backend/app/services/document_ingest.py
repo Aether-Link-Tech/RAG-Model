@@ -20,6 +20,8 @@ from backend.app.services.document_parser import (
     extract_text,
 )
 from backend.app.services.embedding import EmbeddingError, embed_texts
+from backend.app.services import near_duplicate
+from backend.app.services.near_duplicate import NearDuplicateError
 from backend.app.services.vector_store import Visibility, upsert_chunks
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,12 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
             document.filename,
             cancel_event=cancel_event,
         )
+        # FR-081: compare with the caller's own and public documents before indexing.
+        fingerprint = near_duplicate.signature(text)
+        match = await near_duplicate.find_near_duplicate(db, document, fingerprint)
+        if match is not None:
+            raise NearDuplicateError(match)
+
         chunks = split_text(text)
         if not chunks:
             raise IngestError("No extractable text found in document")
@@ -67,8 +75,17 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
             metadatas=metadatas,
             visibility=visibility,
         )
+        await near_duplicate.store_fingerprint(db, document, fingerprint)
         document.status = "indexed"
         document.error_message = None
+    except NearDuplicateError as exc:
+        # Recorded on the document, then re-raised so an upload can be rejected cleanly.
+        await db.rollback()
+        document.status = "failed"
+        document.error_message = str(exc)
+        await db.commit()
+        await db.refresh(document)
+        raise
     except asyncio.CancelledError:
         cancel_event.set()
         document.status = "failed"
@@ -148,6 +165,10 @@ async def reindex_document_in_background(
             if document is None:
                 logger.warning("Re-index skipped: document %s not visible to user %s", document_id, user_id)
                 return
-            await index_document(db, document)
+            try:
+                await index_document(db, document)
+            except NearDuplicateError:
+                # A replacement that duplicates another document stays failed with the reason.
+                logger.info("Re-index of %s rejected as near-duplicate", document_id)
         finally:
             clear_rls_context(db)

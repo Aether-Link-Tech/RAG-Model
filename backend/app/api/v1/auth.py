@@ -83,11 +83,16 @@ def _locked(seconds: int) -> HTTPException:
     )
 
 
-def _unauthorized(detail: str = INVALID_CREDENTIALS) -> HTTPException:
+def _unauthorized(
+    detail: str = INVALID_CREDENTIALS, *, captcha_required: bool = False
+) -> HTTPException:
+    headers = {"WWW-Authenticate": "Bearer"}
+    if captcha_required:
+        headers.update(CAPTCHA_HEADER)
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=detail,
-        headers={"WWW-Authenticate": "Bearer"},
+        headers=headers,
     )
 
 
@@ -234,13 +239,20 @@ async def login(payload: LoginRequest, request: Request, db: DbSession) -> Token
                 raise _locked(await lockout_seconds_remaining(email))
         except AuthStateUnavailableError as exc:
             raise _service_unavailable(exc) from exc
-        if failures >= settings.LOGIN_CAPTCHA_AFTER_FAILURES:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=INVALID_CREDENTIALS,
-                headers={"WWW-Authenticate": "Bearer", **CAPTCHA_HEADER},
-            )
-        raise _unauthorized()
+        raise _unauthorized(captcha_required=failures >= settings.LOGIN_CAPTCHA_AFTER_FAILURES)
+
+    # FR-074 / AL-266: Checked after verify_password so a quarantined login performs
+    # the same DB lookup and password-hashing work as a wrong-password login up to
+    # rejection. Quarantined logins keep the lockout exemption (no record_failed_login,
+    # no reset_failed_logins) and return the same 401 response and headers.
+    # Fail closed if status cannot be read.
+    try:
+        user_status = getattr(user, "status", None)
+    except Exception:
+        user_status = None
+
+    if user_status != "active":
+        raise _unauthorized(captcha_required=failures >= settings.LOGIN_CAPTCHA_AFTER_FAILURES)
 
     try:
         await reset_failed_logins(email)
@@ -282,7 +294,12 @@ async def refresh_tokens(payload: RefreshRequest, db: DbSession) -> TokenRespons
         select(User).where(User.id == claims["user_id"], User.is_deleted.is_(False))
     )
     user = result.scalar_one_or_none()
-    if user is None or not user.is_verified:
+    try:
+        user_status = getattr(user, "status", None) if user is not None else None
+    except Exception:
+        user_status = None
+
+    if user is None or not user.is_verified or user_status != "active":
         raise _unauthorized("Invalid or expired refresh token.")
 
     try:

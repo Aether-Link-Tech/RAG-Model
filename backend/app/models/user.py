@@ -43,6 +43,12 @@ class User(Base):
         default=UserRole.USER.value,
         nullable=False
     )
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="active",
+        server_default="active",
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -63,6 +69,7 @@ class User(Base):
 
     __table_args__ = (
         CheckConstraint("role IN ('admin', 'user')", name="check_user_role"),
+        CheckConstraint("status IN ('active', 'quarantined')", name="check_user_status"),
     )
 
     @validates("email")

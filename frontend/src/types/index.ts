@@ -40,6 +40,7 @@ export type AuditEventType =
   | 'replace_rejected'
   | 'access_denied'
   | 'download_blocked'
+  | 'document_published'
   | 'ocr_image_skipped';
 
 export interface AuditLogEntry {

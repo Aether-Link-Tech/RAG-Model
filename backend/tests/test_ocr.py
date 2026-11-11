@@ -421,3 +421,18 @@ async def test_unavailable_models_skip_images_but_index(async_client, test_user,
         assert {i.ocr_error for i in images} == {"OCR is not configured correctly"}
     finally:
         await _purge_audit(test_user)
+
+
+async def test_publishing_moves_extracted_images_to_the_public_copy(async_client, test_user, ocr_pipeline):
+    """AL-185 x FR-058: the private row (and its image rows) is replaced by a public copy."""
+    data = (EXTRACTION / "images_2.docx").read_bytes()
+    private_id = (await upload(async_client, test_user, "brochure.docx", data, DOCX_MIME)).json()["id"]
+    published = await async_client.post(f"/api/v1/documents/{private_id}/publish", headers=bearer(test_user))
+    assert published.status_code in (200, 201), published.text
+    public_id = published.json()["id"]
+
+    images = await _images_for(test_user, public_id)
+    assert [i.ocr_status for i in images] == ["done", "done"]
+    new_folder = image_folder(test_user.id, uuid.UUID(public_id))
+    assert all(Path(i.file_path).parent == new_folder and Path(i.file_path).exists() for i in images)
+    assert not image_folder(test_user.id, uuid.UUID(private_id)).exists()  # nothing left behind

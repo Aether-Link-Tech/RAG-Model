@@ -31,7 +31,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.models.document import Document
+from backend.app.models.document_image import DocumentImage
 from backend.app.models.fingerprint import DocumentFingerprint
+from backend.app.services.document_images import image_folder
 from backend.app.services import audit_log, near_duplicate
 from backend.app.services.document_ingest import (
     UnsafeStoragePathError,
@@ -179,6 +181,15 @@ async def publish_private_document(
         )
     ).scalar_one_or_none()
 
+    # FR-058: extracted images (rows cascade-delete with the private row; files stay).
+    images = (
+        await db.execute(select(DocumentImage).where(DocumentImage.document_id == old_id))
+    ).scalars().all()
+    image_rows = [
+        {column.name: getattr(image, column.key) for column in DocumentImage.__table__.columns}
+        for image in images
+    ]
+
     # --- 3. publish_document(): inserts the public row and deletes the private row.
     try:
         await db.execute(
@@ -224,8 +235,11 @@ async def publish_private_document(
             # Nothing to copy (e.g. the private index was lost): index from the new file.
             new_document = await index_document(db, new_document)
             indexed = new_document.status == "indexed"
-        elif fingerprint is not None:
-            await _keep_fingerprint(db, new_document, fingerprint)
+        else:
+            if fingerprint is not None:
+                await _keep_fingerprint(db, new_document, fingerprint)
+            if image_rows:
+                await _keep_images(db, owner_id, old_id, new_id, image_rows)
     except Exception:
         logger.exception(
             "Publish: public indexing failed for new document %s (old document %s; "
@@ -272,6 +286,24 @@ async def publish_private_document(
 
     await _audit_published(owner_id, audit_filename, old_id, new_id, client_ip)
     return PublishResult(document=new_document, warning=warning)
+
+
+async def _keep_images(db: AsyncSession, owner_id, old_id, new_id, rows: list[dict]) -> None:
+    """Move extracted images to the public copy: folder and document_images rows (FR-058)."""
+    old_folder, new_folder = image_folder(owner_id, old_id), image_folder(owner_id, new_id)
+    try:
+        if old_folder.is_dir():
+            new_folder.parent.mkdir(parents=True, exist_ok=True)
+            old_folder.rename(new_folder)
+        for row in rows:
+            row = dict(row, id=uuid.uuid4(), document_id=new_id,
+                       file_path=str(new_folder / Path(row["file_path"]).name))
+            row.pop("created_at", None)
+            db.add(DocumentImage(**row))
+        await db.commit()
+    except Exception:  # never fail a publish over image metadata
+        logger.exception("Publish: could not move extracted images for %s", new_id)
+        await _safe_rollback(db)
 
 
 async def _keep_fingerprint(db: AsyncSession, document: Document, signature: bytes) -> None:

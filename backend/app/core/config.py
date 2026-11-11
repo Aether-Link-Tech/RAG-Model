@@ -120,8 +120,8 @@ class Settings(BaseConfig):
     CLAMAV_QUARANTINE_DIR: str = os.getenv(
         "CLAMAV_QUARANTINE_DIR", "quarantine"
     )
-    CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "1000"))
-    CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "200"))
+    CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "800"))
+    CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "100"))
 
     # Parser Sandbox (FR-067 / AL-163 / AL-164)
     PARSER_SANDBOX_ENABLED: bool = os.getenv("PARSER_SANDBOX_ENABLED", "True").lower() in ("true", "1")

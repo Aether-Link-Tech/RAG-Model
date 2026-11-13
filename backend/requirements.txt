@@ -36,6 +36,7 @@ pypdf2
 pdfplumber
 python-docx
 pymupdf
+chardet
 
 # OCR
 pillow

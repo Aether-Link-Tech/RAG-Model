@@ -191,3 +191,16 @@ async def test_empty_text_list_returns_empty_without_http(monkeypatch) -> None:
     monkeypatch.setattr(embedding.httpx, "AsyncClient", unexpected_client)
 
     assert await embed_texts([]) == []
+
+
+@pytest.mark.asyncio
+async def test_dropped_connection_becomes_embedding_error(monkeypatch) -> None:
+    """A mid-response disconnect (not a ConnectError/timeout) must not escape as httpx.ReadError,
+    otherwise index_document never marks the document failed."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadError("connection reset by peer", request=request)
+
+    _mock_client(monkeypatch, handler)
+    with pytest.raises(EmbeddingError, match="embedding service is unavailable"):
+        await embed_texts(["hello"])

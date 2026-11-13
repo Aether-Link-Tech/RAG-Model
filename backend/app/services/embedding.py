@@ -19,6 +19,18 @@ async def embed_texts(texts: Sequence[str]) -> list[list[float]]:
     if not 10 <= batch_size <= 50:
         raise EmbeddingError("EMBEDDING_BATCH_SIZE must be between 10 and 50.")
 
+    try:
+        return await _embed_batches(texts, batch_size)
+    except httpx.HTTPError as exc:
+        # Anything not handled by the retry loop (e.g. ReadError, RemoteProtocolError when
+        # Ollama drops the connection mid-response) must still become EmbeddingError, so
+        # index_document marks the document `failed` instead of leaving it `processing`.
+        raise EmbeddingError(
+            "The embedding service is unavailable. Re-upload or replace the file to retry."
+        ) from exc
+
+
+async def _embed_batches(texts: Sequence[str], batch_size: int) -> list[list[float]]:
     embeddings: list[list[float]] = []
     async with httpx.AsyncClient(timeout=60.0) as client:
         for start in range(0, len(texts), batch_size):

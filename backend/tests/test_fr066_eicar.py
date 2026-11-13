@@ -157,13 +157,15 @@ def _clamav_reachable() -> bool:
 
 
 @pytest.mark.clamav_scan
-def test_real_clamav_detects_eicar(tmp_path, quarantine_dir):
+def test_real_clamav_detects_eicar(quarantine_dir):
     if not _clamav_reachable():
         if os.getenv("CI") and os.getenv("CLAMAV_HOST"):
             pytest.fail("ClamAV required in CI but unreachable")
         pytest.skip("ClamAV not running locally")
 
-    staged = tmp_path / "eicar.tmp"
+    from backend.app.services.storage_paths import user_storage_dir
+
+    staged = user_storage_dir(USER_ID, create=True) / "eicar.tmp"
     try:
         staged.write_bytes(EICAR)
         staged.read_bytes()

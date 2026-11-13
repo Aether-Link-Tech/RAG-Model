@@ -106,6 +106,7 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
                 "chunk_id": ids[index],
                 "filename": document.filename,
                 "chunk_index": index,
+                "embedding_model": settings.EMBEDDING_MODEL_VERSION,
             }
             for index, (_, extra) in enumerate(chunk_items)
         ]

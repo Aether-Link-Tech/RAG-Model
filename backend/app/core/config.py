@@ -65,6 +65,14 @@ class Settings(BaseConfig):
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen3:4b")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+    EMBEDDING_MODEL_VERSION: str = os.getenv(
+        "EMBEDDING_MODEL_VERSION", "nomic-embed-text:v1.5"
+    )
+    EMBEDDING_BATCH_SIZE: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+    EMBEDDING_MAX_RETRIES: int = int(os.getenv("EMBEDDING_MAX_RETRIES", "3"))
+    EMBEDDING_RETRY_BASE_DELAY: float = float(
+        os.getenv("EMBEDDING_RETRY_BASE_DELAY", "0.5")
+    )
 
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", DEFAULT_DEV_SECRET_KEY)

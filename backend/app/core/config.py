@@ -120,8 +120,12 @@ class Settings(BaseConfig):
     CLAMAV_QUARANTINE_DIR: str = os.getenv(
         "CLAMAV_QUARANTINE_DIR", "quarantine"
     )
-    CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "800"))
-    CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "100"))
+    # Character-based chunker used by the current upload pipeline (services/chunking.py)
+    CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "1000"))
+    CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "200"))
+    # Token-based, section-aware chunker (FR-016, services/text_chunking.py)
+    CHUNK_SIZE_TOKENS: int = int(os.getenv("CHUNK_SIZE_TOKENS", "800"))
+    CHUNK_OVERLAP_TOKENS: int = int(os.getenv("CHUNK_OVERLAP_TOKENS", "100"))
 
     # Parser Sandbox (FR-067 / AL-163 / AL-164)
     PARSER_SANDBOX_ENABLED: bool = os.getenv("PARSER_SANDBOX_ENABLED", "True").lower() in ("true", "1")

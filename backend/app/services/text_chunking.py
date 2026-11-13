@@ -146,8 +146,8 @@ def chunk_text(
     overlap: int | None = None,
 ) -> list[TextChunk]:
     """Split extracted sections into token-sized chunks with section/page metadata."""
-    size = settings.CHUNK_SIZE if chunk_size is None else chunk_size
-    gap = settings.CHUNK_OVERLAP if overlap is None else overlap
+    size = settings.CHUNK_SIZE_TOKENS if chunk_size is None else chunk_size
+    gap = settings.CHUNK_OVERLAP_TOKENS if overlap is None else overlap
     if size <= 0:
         raise ValueError("chunk_size must be positive")
     if gap < 0:

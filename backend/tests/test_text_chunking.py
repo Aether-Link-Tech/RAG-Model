@@ -18,13 +18,16 @@ def _document(text: str, *, page: int = 1, section: str = "Overview") -> Extract
 
 
 def test_default_chunk_sizes() -> None:
-    assert settings.CHUNK_SIZE == 800
-    assert settings.CHUNK_OVERLAP == 100
+    assert settings.CHUNK_SIZE_TOKENS == 800
+    assert settings.CHUNK_OVERLAP_TOKENS == 100
+    # the character-based pipeline chunker keeps its own defaults
+    assert settings.CHUNK_SIZE == 1000
+    assert settings.CHUNK_OVERLAP == 200
 
 
 def test_custom_chunk_sizes_are_read_from_environment(monkeypatch) -> None:
-    monkeypatch.setenv("CHUNK_SIZE", "12")
-    monkeypatch.setenv("CHUNK_OVERLAP", "3")
+    monkeypatch.setenv("CHUNK_SIZE_TOKENS", "12")
+    monkeypatch.setenv("CHUNK_OVERLAP_TOKENS", "3")
     text = (
         "First sentence. Second sentence. Third sentence. Fourth sentence. "
         "Fifth sentence. Sixth sentence."

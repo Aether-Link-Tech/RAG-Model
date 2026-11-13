@@ -142,9 +142,9 @@ class Settings(BaseConfig):
     PARSER_CPU_LIMIT: str = os.getenv("PARSER_CPU_LIMIT", "1.0")
     PARSER_TIMEOUT_SECONDS: int = int(os.getenv("PARSER_TIMEOUT_SECONDS", "60"))
     PARSER_MAX_OUTPUT_BYTES: int = int(os.getenv("PARSER_MAX_OUTPUT_BYTES", str(10 * 1024 * 1024)))
-    # "mount": bind-mount the file read-only (backend on the host).
-    # "stdin": stream the file through stdin (backend inside a container).
-    PARSER_INPUT_MODE: str = os.getenv("PARSER_INPUT_MODE", "mount")
+    # "stdin" (default): stream the file through stdin (-i) with no host bind-mount.
+    # "mount": bind-mount the file read-only (requires container UID 10001 read access).
+    PARSER_INPUT_MODE: str = os.getenv("PARSER_INPUT_MODE", "stdin")
     # Layout mode returns embedded images as base64 (FR-058), so it needs a larger cap.
     PARSER_LAYOUT_MAX_OUTPUT_BYTES: int = int(os.getenv("PARSER_LAYOUT_MAX_OUTPUT_BYTES", str(40 * 1024 * 1024)))
 

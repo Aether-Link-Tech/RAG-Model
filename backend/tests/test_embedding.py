@@ -154,12 +154,19 @@ async def test_wrong_vector_dimension_raises_embedding_error(monkeypatch) -> Non
 
 @pytest.mark.asyncio
 async def test_document_ingest_metadata_contains_embedding_model(monkeypatch) -> None:
+    import uuid
+    from pathlib import Path
+    from backend.app.services.storage_paths import build_storage_path
+
     captured = {}
+    user_id, document_id = uuid.uuid4(), uuid.uuid4()
+    file_path = build_storage_path(user_id, document_id, "document.txt")
+    Path(file_path).write_bytes(b"text")
     document = SimpleNamespace(
-        id="document-id",
-        user_id="user-id",
+        id=document_id,
+        user_id=user_id,
         visibility="private",
-        file_path="document.txt",
+        file_path=file_path,
         filename="document.txt",
         mime_type="text/plain",
         status="pending",

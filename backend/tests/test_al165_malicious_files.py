@@ -184,6 +184,7 @@ def _run_payload_in_sandbox(host_file: Path, payload: str, timeout: int = 90) ->
         container_name=name,
         host_file_path=str(host_file.resolve()),
         container_input_path=f"/input/{host_file.name}",
+        input_mode="mount",
     )
     image_index = cmd.index(settings.PARSER_DOCKER_IMAGE)
     cmd = cmd[:image_index] + ["--entrypoint", "python", settings.PARSER_DOCKER_IMAGE, "-c", payload]

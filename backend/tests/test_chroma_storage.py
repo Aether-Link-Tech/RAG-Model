@@ -45,13 +45,18 @@ def test_upsert_overwrites_existing_chunk(chroma_client):
 async def test_reindex_with_fewer_chunks_removes_stale_chunks(
     chroma_client, monkeypatch
 ):
+    from pathlib import Path
+    from backend.app.services.storage_paths import build_storage_path
+
     user_id, document_id = uuid.uuid4(), uuid.uuid4()
+    file_path = build_storage_path(user_id, document_id, "document.txt")
+    Path(file_path).write_bytes(b"content")
     document = SimpleNamespace(
         user_id=user_id,
         id=document_id,
         status="uploaded",
         error_message=None,
-        file_path="document.txt",
+        file_path=file_path,
         mime_type="text/plain",
         filename="document.txt",
         visibility="private",
@@ -179,13 +184,18 @@ def test_delete_document_chunks_removes_all_document_chunks(
 
 
 async def test_ingested_chunk_id_metadata_matches_chroma_id(chroma_client, monkeypatch):
+    from pathlib import Path
+    from backend.app.services.storage_paths import build_storage_path
+
     user_id, document_id = uuid.uuid4(), uuid.uuid4()
+    file_path = build_storage_path(user_id, document_id, "document.txt")
+    Path(file_path).write_bytes(b"content")
     document = SimpleNamespace(
         user_id=user_id,
         id=document_id,
         status="uploaded",
         error_message=None,
-        file_path="document.txt",
+        file_path=file_path,
         mime_type="text/plain",
         filename="document.txt",
         visibility="private",

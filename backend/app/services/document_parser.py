@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import stat
 import subprocess
 import threading
 import time
@@ -17,6 +18,14 @@ from pathlib import Path
 from typing import Optional
 
 from backend.app.core.config import settings
+from backend.app.services.storage_paths import (
+    UnsafeStoragePathError,
+    open_user_file_no_follow,
+    resolve_user_file_path,
+    validate_safe_filename,
+)
+
+_UNSCOPED_PARSER_LOCAL_ENVS = frozenset({"development", "dev", "local"})
 
 logger = logging.getLogger(__name__)
 
@@ -276,15 +285,62 @@ def _communicate_with_limits(
     return stdout_text, stderr_text
 
 
-def _start_stdin_feeder(proc: subprocess.Popen, path: Path) -> None:
+def _validate_parser_input_path(
+    file_path: str | Path,
+    filename: str,
+    owner_id: Optional[uuid.UUID | str] = None,
+) -> tuple[Path, str]:
+    """Validate parser input path (and owner containment when ``owner_id`` is given)."""
+    raw = str(file_path)
+    if "\x00" in raw:
+        raise UnsafeStoragePathError("Parser input path contains NUL byte.")
+
+    if owner_id is not None:
+        resolved = resolve_user_file_path(owner_id, raw, must_exist=False)
+    else:
+        env_normalized = (settings.ENV or "").lower().strip()
+        if env_normalized not in _UNSCOPED_PARSER_LOCAL_ENVS:
+            raise UnsafeStoragePathError(
+                "owner_id is required for document parsing outside local development environments."
+            )
+        candidate = Path(raw)
+        if candidate.is_symlink():
+            raise UnsafeStoragePathError("Parser input path must not be a symlink.")
+        resolved = candidate.resolve()
+        if resolved.is_symlink():
+            raise UnsafeStoragePathError("Parser input path must not be a symlink.")
+
+    safe_name = resolved.name or Path(filename).name or "document"
+    validate_safe_filename(safe_name)
+    return resolved, safe_name
+
+
+def _start_stdin_feeder(
+    proc: subprocess.Popen,
+    path: Path,
+    *,
+    owner_id: Optional[uuid.UUID | str] = None,
+) -> None:
     """Stream the document into the sandbox's stdin from a background thread."""
 
     def _feed() -> None:
         try:
-            with open(path, "rb") as source:
+            if owner_id is not None:
+                source = open_user_file_no_follow(owner_id, path)
+            else:
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                fd = os.open(path, flags)
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise UnsafeStoragePathError("Parser input is not a regular file.")
+                    source = os.fdopen(fd, "rb")
+                except BaseException:
+                    os.close(fd)
+                    raise
+            with source:
                 while chunk := source.read(65536):
                     proc.stdin.write(chunk)
-        except (BrokenPipeError, OSError, ValueError):
+        except (BrokenPipeError, OSError, ValueError, UnsafeStoragePathError):
             pass  # container exited or was killed; the reader reports the error
         finally:
             try:
@@ -300,6 +356,7 @@ def extract_text_sandboxed(
     mime_type: str,
     filename: str,
     *,
+    owner_id: Optional[uuid.UUID | str] = None,
     timeout_seconds: Optional[int] = None,
     docker_image: Optional[str] = None,
     memory_limit: Optional[str] = None,
@@ -309,14 +366,15 @@ def extract_text_sandboxed(
     parser_mode: str = "text",
 ) -> str:
     """Execute text extraction inside an isolated Docker container with resource limits."""
-    resolved_path = Path(file_path).resolve()
+    resolved_path, safe_name = _validate_parser_input_path(
+        file_path, filename, owner_id=owner_id
+    )
     if not resolved_path.exists() or not resolved_path.is_file():
         raise ParserSandboxError(f"Document file does not exist: {resolved_path.name}")
 
     timeout = timeout_seconds or settings.PARSER_TIMEOUT_SECONDS
     max_bytes = max_output_bytes or settings.PARSER_MAX_OUTPUT_BYTES
     container_name = f"rag-parser-{uuid.uuid4().hex[:12]}"
-    safe_name = resolved_path.name or Path(filename).name or "document"
     container_input_path = f"/input/{safe_name}"
 
     use_stdin = (settings.PARSER_INPUT_MODE or "mount").lower() == "stdin"
@@ -331,6 +389,15 @@ def extract_text_sandboxed(
         parser_mode=parser_mode,
     )
 
+    if not use_stdin:
+        # Reduce mount-mode TOCTOU: verify the target is a non-symlink regular file right before launch.
+        fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise UnsafeStoragePathError("Parser input is not a regular file.")
+        finally:
+            os.close(fd)
+
     proc = None
     try:
         proc = subprocess.Popen(
@@ -340,7 +407,7 @@ def extract_text_sandboxed(
             stderr=subprocess.PIPE,
         )
         if use_stdin:
-            _start_stdin_feeder(proc, resolved_path)
+            _start_stdin_feeder(proc, resolved_path, owner_id=owner_id)
         stdout, stderr = _communicate_with_limits(
             proc=proc,
             max_output_bytes=max_bytes,
@@ -451,6 +518,7 @@ def extract_text(
     mime_type: str,
     filename: str,
     *,
+    owner_id: Optional[uuid.UUID | str] = None,
     cancel_event: Optional[threading.Event] = None,
     max_output_bytes: Optional[int] = None,
 ) -> str:
@@ -463,8 +531,8 @@ def extract_text(
     In-process parsing is permitted only when `PARSER_SANDBOX_ENABLED` is
     explicitly False (for unit testing environments without Docker).
     """
-    path = Path(file_path)
-    suffix = path.suffix.lower() or Path(filename).suffix.lower()
+    resolved_path, _ = _validate_parser_input_path(file_path, filename, owner_id=owner_id)
+    suffix = resolved_path.suffix.lower() or Path(filename).suffix.lower()
 
     if not _is_supported_suffix(suffix, mime_type):
         raise UnsupportedDocumentError(
@@ -473,15 +541,16 @@ def extract_text(
 
     if settings.PARSER_SANDBOX_ENABLED:
         return extract_text_sandboxed(
-            file_path,
+            str(resolved_path),
             mime_type,
             filename,
+            owner_id=owner_id,
             cancel_event=cancel_event,
             max_output_bytes=max_output_bytes,
         )
 
     # In-process parsing allowed ONLY when sandbox is explicitly disabled (test mode)
-    return extract_text_in_process(path, mime_type, filename)
+    return extract_text_in_process(resolved_path, mime_type, filename)
 
 
 def _extract_pdf(path: Path) -> str:
@@ -527,6 +596,7 @@ def extract_layout(
     mime_type: str,
     filename: str,
     *,
+    owner_id: Optional[uuid.UUID | str] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> dict:
     """Text blocks and embedded images in reading order (see docker/parser/runner.py).
@@ -537,16 +607,17 @@ def extract_layout(
     """
     import json
 
-    path = Path(file_path)
-    suffix = path.suffix.lower() or Path(filename).suffix.lower()
+    resolved_path, _ = _validate_parser_input_path(file_path, filename, owner_id=owner_id)
+    suffix = resolved_path.suffix.lower() or Path(filename).suffix.lower()
     if not _is_supported_suffix(suffix, mime_type):
         raise UnsupportedDocumentError("Only PDF, DOCX, and TXT files can be indexed in this sprint")
 
     if settings.PARSER_SANDBOX_ENABLED:
         raw = extract_text_sandboxed(
-            file_path,
+            str(resolved_path),
             mime_type,
             filename,
+            owner_id=owner_id,
             cancel_event=cancel_event,
             max_output_bytes=settings.PARSER_LAYOUT_MAX_OUTPUT_BYTES,
             parser_mode="layout",
@@ -556,7 +627,7 @@ def extract_layout(
         except ValueError as exc:
             raise ParserSandboxError("Parser returned an invalid layout") from exc
     else:
-        layout = _load_runner_module().extract_layout(path, mime_type)
+        layout = _load_runner_module().extract_layout(resolved_path, mime_type)
     if not isinstance(layout, dict) or layout.get("version") != 1:
         raise ParserSandboxError("Parser returned an unsupported layout version")
     return layout

@@ -29,6 +29,11 @@ from typing import Any, Callable, Iterable, Optional
 
 from backend.app.core.config import settings
 from backend.app.db import chroma
+from backend.app.services.storage_paths import (
+    UnsafeStoragePathError,
+    resolve_user_file_path,
+    user_storage_dir,
+)
 
 CRITICAL, WARNING, INFO = "critical", "warning", "info"
 SEVERITY = {
@@ -213,21 +218,61 @@ def _is_document_image(path: Path, root: Path, docs: dict[uuid.UUID, DocumentRec
 def owner_folders(root: Path, user_id: uuid.UUID) -> tuple[Path, ...]:
     """Folders a user's files may live in: the current layout <root>/users/<id>/documents
     (AL-139) and the legacy <root>/<id> used before it."""
-    return (root / "users" / str(user_id) / "documents", root / str(user_id))
+    owner_id = uuid.UUID(str(user_id))
+    try:
+        current = user_storage_dir(owner_id, base_dir=root, create=False)
+    except UnsafeStoragePathError:
+        current = root / "users" / str(owner_id) / "documents"
+    return (current, root / str(owner_id))
+
+
+def _is_valid_legacy_owner_path(raw_path: str, root: Path, user_id: uuid.UUID) -> bool:
+    """Allow unmigrated legacy files under ``<root>/<user_id>/`` without permitting symlinks."""
+    if not raw_path or not raw_path.strip() or "\x00" in raw_path:
+        return False
+    candidate = Path(raw_path)
+    legacy_dir = root / str(uuid.UUID(str(user_id)))
+    if candidate.is_symlink() or legacy_dir.is_symlink():
+        return False
+    resolved_legacy = legacy_dir.resolve()
+    resolved_candidate = candidate.resolve()
+    return resolved_candidate != resolved_legacy and resolved_candidate.is_relative_to(resolved_legacy)
 
 
 def _check_files(report: Report, docs: dict[uuid.UUID, DocumentRecord], upload_dir: Path) -> None:
     root = upload_dir.resolve()
     referenced: set[Path] = set()
     for doc in docs.values():
-        path = Path(doc.file_path).resolve()
-        referenced.add(path)
-        if not any(path.is_relative_to(folder) for folder in owner_folders(root, doc.user_id)):
-            report.issues.append(Issue("file_outside_owner_folder", "Document file is not inside its owner's folder",
-                                       document_id=str(doc.id), path=str(path)))
-        if not path.is_file():
-            report.issues.append(Issue("missing_file", "Document file is missing from storage",
-                                       document_id=str(doc.id), path=str(path)))
+        raw_path = doc.file_path or ""
+        try:
+            resolved = resolve_user_file_path(
+                doc.user_id, raw_path, base_dir=root, must_exist=False
+            )
+            in_owner_folder = True
+        except UnsafeStoragePathError:
+            in_owner_folder = _is_valid_legacy_owner_path(raw_path, root, doc.user_id)
+            resolved = Path(raw_path).resolve() if raw_path and "\x00" not in raw_path else None
+
+        if resolved is not None:
+            referenced.add(resolved)
+        if not in_owner_folder:
+            report.issues.append(
+                Issue(
+                    "file_outside_owner_folder",
+                    "Document file is not inside its owner's folder",
+                    document_id=str(doc.id),
+                    path=str(resolved if resolved is not None else raw_path),
+                )
+            )
+        if resolved is None or not resolved.is_file():
+            report.issues.append(
+                Issue(
+                    "missing_file",
+                    "Document file is missing from storage",
+                    document_id=str(doc.id),
+                    path=str(resolved if resolved is not None else raw_path),
+                )
+            )
     if not root.is_dir():
         return
     for path in root.rglob("*"):

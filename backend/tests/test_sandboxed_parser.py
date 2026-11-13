@@ -46,7 +46,7 @@ import docker.parser.runner as runner
 # ---------------------------------------------------------------------------
 
 def test_build_docker_run_command_hardening_flags():
-    """Verify all mandated security hardening and resource limit flags are present."""
+    """Verify all mandated security hardening and resource limit flags are present in mount mode."""
     cmd = build_docker_run_command(
         container_name="test-parser-1234",
         host_file_path="/host/data/report.pdf",
@@ -55,6 +55,7 @@ def test_build_docker_run_command_hardening_flags():
         docker_image="rag-parser-sandbox:latest",
         memory_limit="512m",
         cpu_limit="1.0",
+        input_mode="mount",
     )
 
     # Core execution
@@ -97,6 +98,92 @@ def test_build_docker_run_command_hardening_flags():
     assert "rag-parser-sandbox:latest" in cmd
     assert "/input/report.pdf" in cmd
     assert "application/pdf" in cmd
+
+
+def test_build_docker_run_command_stdin_default_has_no_mount():
+    """Verify default stdin mode avoids host bind mounts while keeping all sandbox hardening."""
+    assert settings.PARSER_INPUT_MODE == "stdin"
+    cmd = build_docker_run_command(
+        container_name="test-parser-stdin",
+        host_file_path="/host/data/report.pdf",
+        container_input_path="/input/report.pdf",
+        mime_type="application/pdf",
+    )
+
+    assert "-v" not in cmd
+    assert "-i" in cmd
+    assert "--user" in cmd
+    assert cmd[cmd.index("--user") + 1] == "10001:10001"
+    assert "--network" in cmd
+    assert cmd[cmd.index("--network") + 1] == "none"
+    assert "--read-only" in cmd
+    assert "--cap-drop" in cmd
+    assert cmd[cmd.index("--cap-drop") + 1] == "ALL"
+    assert "-" in cmd
+    assert ".pdf" in cmd
+
+
+def test_extract_text_sandboxed_stdin_streams_0600_file_via_open_user_file_no_follow(monkeypatch):
+    """Verify stdin mode preserves 0600 permissions and reads via open_user_file_no_follow."""
+    import os
+    from backend.app.services import document_parser
+    from backend.app.services.storage_paths import create_exclusive_staging_file
+
+    user_id = uuid.uuid4()
+    doc_id = uuid.uuid4()
+    staged_path, handle = create_exclusive_staging_file(
+        user_id, doc_id, "notes.txt", purpose="upload"
+    )
+    with handle:
+        handle.write(b"confidential 0600 text")
+
+    assert (os.stat(staged_path).st_mode & 0o777) == 0o600
+
+    captured_stdin: list[bytes] = []
+    open_calls: list[tuple[object, object]] = []
+    stdin_done = threading.Event()
+    real_open = document_parser.open_user_file_no_follow
+
+    def tracked_open(uid, path):
+        open_calls.append((uid, path))
+        return real_open(uid, path)
+
+    class FakeStdin:
+        def write(self, data: bytes) -> int:
+            captured_stdin.append(data)
+            return len(data)
+
+        def close(self) -> None:
+            stdin_done.set()
+
+    class FakeProc:
+        def __init__(self) -> None:
+            self.stdin = FakeStdin()
+            self.stdout = io.BytesIO(b"confidential 0600 text")
+            self.stderr = io.BytesIO(b"")
+            self.returncode = 0
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(settings, "PARSER_INPUT_MODE", "stdin")
+    monkeypatch.setattr(document_parser, "open_user_file_no_follow", tracked_open)
+    monkeypatch.setattr(document_parser.subprocess, "Popen", lambda *a, **kw: FakeProc())
+
+    extracted = extract_text_sandboxed(
+        staged_path,
+        "text/plain",
+        "notes.txt",
+        owner_id=user_id,
+    )
+    assert extracted == "confidential 0600 text"
+    assert stdin_done.wait(timeout=2.0)
+    assert b"".join(captured_stdin) == b"confidential 0600 text"
+    assert len(open_calls) == 1
+    assert (os.stat(staged_path).st_mode & 0o777) == 0o600
 
 
 def test_build_docker_run_command_defaults_from_settings(monkeypatch):
@@ -371,11 +458,16 @@ async def test_index_document_marks_failed_on_parser_sandbox_error():
     mock_db.commit = _async_noop
     mock_db.refresh = _async_noop
 
+    from backend.app.services.storage_paths import build_storage_path
+
+    doc_id, user_id = uuid.uuid4(), uuid.uuid4()
+    file_path = build_storage_path(user_id, doc_id, "corrupted.pdf")
+    Path(file_path).write_bytes(b"%PDF-1.4")
     doc = Document(
-        id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
+        id=doc_id,
+        user_id=user_id,
         filename="corrupted.pdf",
-        file_path="/tmp/corrupted.pdf",
+        file_path=file_path,
         mime_type="application/pdf",
         file_size=1024,
         file_hash="dummy_hash",
@@ -399,11 +491,16 @@ async def test_index_document_marks_failed_on_output_limit_exceeded():
     mock_db.commit = _async_noop
     mock_db.refresh = _async_noop
 
+    from backend.app.services.storage_paths import build_storage_path
+
+    doc_id, user_id = uuid.uuid4(), uuid.uuid4()
+    file_path = build_storage_path(user_id, doc_id, "huge.pdf")
+    Path(file_path).write_bytes(b"%PDF-1.4")
     doc = Document(
-        id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
+        id=doc_id,
+        user_id=user_id,
         filename="huge.pdf",
-        file_path="/tmp/huge.pdf",
+        file_path=file_path,
         mime_type="application/pdf",
         file_size=2048,
         file_hash="dummy_hash_huge",
@@ -427,11 +524,16 @@ async def test_index_document_actual_asyncio_cancellation_marks_failed():
     mock_db.commit = _async_noop
     mock_db.refresh = _async_noop
 
+    from backend.app.services.storage_paths import build_storage_path
+
+    doc_id, user_id = uuid.uuid4(), uuid.uuid4()
+    file_path = build_storage_path(user_id, doc_id, "cancelled.pdf")
+    Path(file_path).write_bytes(b"%PDF-1.4")
     doc = Document(
-        id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
+        id=doc_id,
+        user_id=user_id,
         filename="cancelled.pdf",
-        file_path="/tmp/cancelled.pdf",
+        file_path=file_path,
         mime_type="application/pdf",
         file_size=1024,
         file_hash="dummy_hash_cancel",
@@ -767,6 +869,7 @@ class TestDockerSandboxIntegration:
             host_file_path=str(slow_file.resolve()),
             container_input_path="/input/slow.txt",
             mime_type="text/plain",
+            input_mode="mount",
         )
         cmd.insert(cmd.index("rag-parser-sandbox:latest"), "--entrypoint")
         cmd.insert(cmd.index("rag-parser-sandbox:latest"), "sleep")
@@ -807,6 +910,7 @@ class TestDockerSandboxIntegration:
             host_file_path=str(test_file.resolve()),
             container_input_path="/input/inspect_test.txt",
             mime_type="text/plain",
+            input_mode="mount",
         )
         # Add sleep so we can inspect the running container configuration
         cmd.insert(cmd.index("rag-parser-sandbox:latest"), "--entrypoint")

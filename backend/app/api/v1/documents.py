@@ -11,11 +11,13 @@ import os
 import uuid
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
+from starlette.background import BackgroundTask
 
 from backend.app.api.deps import CurrentUser, DbSession
 from backend.app.api.v1.collections import get_owned_collection
@@ -32,11 +34,18 @@ from backend.app.services.clamav import (
     scan_and_quarantine,
 )
 from backend.app.services.document_ingest import (
-    build_storage_path,
     index_document,
     reindex_document_in_background,
 )
 from backend.app.services.document_publish import PublishError, publish_private_document
+from backend.app.services.storage_paths import (
+    UnsafeStoragePathError,
+    build_staging_path,
+    build_storage_path,
+    create_exclusive_staging_file,
+    open_user_file_no_follow,
+    resolve_user_file_path,
+)
 from backend.app.services.hash_service import (
     FileSizeLimitExceededError,
     compute_sha256_and_size_stream,
@@ -242,12 +251,24 @@ async def _validate_file_magic_bytes(file: UploadFile, suffix: str) -> None:
         )
 
 
-def _best_effort_remove(path: str | None) -> None:
+def _best_effort_remove(path: str | Path | None) -> None:
     if path and os.path.exists(path):
         try:
             os.remove(path)
         except OSError:
             pass
+
+
+def _best_effort_remove_user_file(user_id: uuid.UUID, path: str | Path | None) -> None:
+    """Remove ``path`` only if it resolves safely inside ``user_id``'s storage directory."""
+    if not path:
+        return
+    try:
+        resolved = resolve_user_file_path(user_id, path, must_exist=False)
+    except UnsafeStoragePathError:
+        logger.warning("Refused to remove unsafe storage path for user %s", user_id)
+        return
+    _best_effort_remove(resolved)
 
 
 async def _safe_rollback(db: DbSession) -> None:
@@ -351,14 +372,23 @@ async def upload_document(
 
     document_id = uuid.uuid4()
     safe_filename = Path(file.filename or f"{document_id}{suffix}").name
-    file_path = build_storage_path(current_user.id, document_id, safe_filename)
-    tmp_path = f"{file_path}.{uuid.uuid4().hex}.tmp"
+    try:
+        file_path = build_storage_path(current_user.id, document_id, safe_filename)
+        tmp_path, buffer = create_exclusive_staging_file(
+            current_user.id, document_id, safe_filename, purpose="upload"
+        )
+    except UnsafeStoragePathError as exc:
+        await log_security_event(user_id_str, filename_str, f"Upload rejected: {exc}", client_ip)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid filename.",
+        ) from exc
     committed = False
 
     try:
-        await file.seek(0)
         written_bytes = 0
-        with open(tmp_path, "wb") as buffer:
+        with buffer:
+            await file.seek(0)
             while chunk := await file.read(STREAM_CHUNK_SIZE):
                 written_bytes += len(chunk)
                 if written_bytes > settings.MAX_UPLOAD_BYTES:
@@ -369,7 +399,7 @@ async def upload_document(
         try:
             await asyncio.to_thread(
                 scan_and_quarantine,
-                tmp_path,
+                str(tmp_path),
                 current_user.id,
                 document_id,
             )
@@ -486,7 +516,7 @@ async def _discard_rejected_upload(db: DbSession, document: Document) -> None:
     except Exception:
         await _safe_rollback(db)
         logger.exception("Could not remove rejected near-duplicate document %s", document.id)
-    _best_effort_remove(file_path)
+    _best_effort_remove_user_file(owner_id, file_path)
 
 
 def _to_response(document: Document, caller_id: uuid.UUID) -> DocumentResponse:
@@ -566,13 +596,33 @@ async def get_document(
     )
 
 
+def _content_disposition(filename: str) -> str:
+    """Build an attachment Content-Disposition header matching Starlette FileResponse."""
+    clean = filename.replace("\r", "").replace("\n", "")
+    try:
+        clean.encode("latin-1")
+    except UnicodeEncodeError:
+        return f"attachment; filename*=utf-8''{quote(clean)}"
+    escaped = clean.replace("\\", "\\\\").replace('"', '\\"')
+    return f'attachment; filename="{escaped}"'
+
+
+async def _stream_user_file(file_obj):
+    """Stream an already-opened file descriptor and close it on completion or disconnect."""
+    try:
+        while chunk := await asyncio.to_thread(file_obj.read, STREAM_CHUNK_SIZE):
+            yield chunk
+    finally:
+        file_obj.close()
+
+
 @router.get("/{document_id}/download")
 async def download_document(
     request: Request,
     document_id: uuid.UUID,
     db: DbSession,
     current_user: CurrentUser,
-) -> FileResponse:
+) -> StreamingResponse:
     """Download an accessible document file (AL-182).
 
     Own documents and public documents only; another user's private document
@@ -580,13 +630,13 @@ async def download_document(
     """
     document = await _accessible_document(db, current_user.id, document_id)
 
-    upload_root = Path(settings.UPLOAD_DIR).resolve()
-    stored_path = Path(document.file_path or "").resolve()
-    if not stored_path.is_relative_to(upload_root) or not stored_path.is_file():
-        # Missing file, or a stored path outside the upload area: never serve it.
+    try:
+        file_obj = open_user_file_no_follow(document.user_id, document.file_path)
+    except (UnsafeStoragePathError, FileNotFoundError) as exc:
+        # Missing file, symlink, or stored path outside the owner's namespace: never serve it.
         reason = (
-            "Download blocked: stored path outside the upload area"
-            if not stored_path.is_relative_to(upload_root)
+            "Download blocked: stored path outside the owner's namespace"
+            if isinstance(exc, UnsafeStoragePathError)
             else "Download blocked: file missing from storage"
         )
         await log_security_event(
@@ -596,14 +646,25 @@ async def download_document(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found on storage server.",
-        )
+        ) from exc
+
+    try:
+        file_size = os.fstat(file_obj.fileno()).st_size
+        headers = {
+            "Content-Disposition": _content_disposition(document.filename),
+            "Content-Length": str(file_size),
+        }
+    except BaseException:
+        file_obj.close()
+        raise
 
     logger.info("Document %s downloaded by user %s", document.id, current_user.id)
 
-    return FileResponse(
-        path=stored_path,
-        filename=document.filename,
+    return StreamingResponse(
+        _stream_user_file(file_obj),
         media_type=document.mime_type,
+        headers=headers,
+        background=BackgroundTask(file_obj.close),
     )
 
 
@@ -780,22 +841,40 @@ async def update_document(
         )
 
     visibility: Visibility = "public" if document.visibility == "public" else "private"
-    replacement_path = Path(build_storage_path(current_user.id, document.id, replacement_name))
-    replacement_path = replacement_path.with_name(
-        f"{document.id}-{uuid.uuid4().hex}{suffix}"
-    )
-    temporary_path = replacement_path.with_suffix(replacement_path.suffix + ".tmp")
     old_path = document.file_path
+    try:
+        resolved_old_path = resolve_user_file_path(document.user_id, old_path, must_exist=False)
+        replacement_path = Path(
+            build_storage_path(
+                document.user_id,
+                document.id,
+                replacement_name,
+                variant=uuid.uuid4().hex,
+            )
+        )
+        temporary_path, buffer = create_exclusive_staging_file(
+            document.user_id, document.id, replacement_name, purpose="replace"
+        )
+    except UnsafeStoragePathError as exc:
+        await log_security_event(
+            str(actor_id), replacement_name, f"Replacement rejected: {exc}", client_ip,
+            audit_log.REPLACE_REJECTED,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document storage path is unsafe; replacement rejected.",
+        ) from exc
 
     try:
-        await file.seek(0)
         written_bytes = 0
-        with open(temporary_path, "wb") as buffer:
+        with buffer:
+            await file.seek(0)
             while chunk := await file.read(STREAM_CHUNK_SIZE):
                 written_bytes += len(chunk)
                 if written_bytes > settings.MAX_UPLOAD_BYTES:
                     raise FileSizeLimitExceededError(settings.MAX_UPLOAD_BYTES)
                 buffer.write(chunk)
+            buffer.flush()
 
         await asyncio.to_thread(scan_and_quarantine, str(temporary_path), actor_id, doc_id)
         os.replace(temporary_path, replacement_path)
@@ -866,8 +945,8 @@ async def update_document(
             detail="The document was replaced, but its old index could not be cleared. Retry the update.",
         ) from exc
 
-    if old_path != document.file_path:
-        _best_effort_remove(old_path)
+    if resolved_old_path != replacement_path.resolve():
+        _best_effort_remove_user_file(document.user_id, resolved_old_path)
     background_tasks.add_task(reindex_document_in_background, doc_id, actor_id, actor_role)
     await db.refresh(document)
     return _to_response(document, actor_id)
@@ -900,10 +979,20 @@ async def delete_document(
     visibility = "public" if document.visibility == "public" else "private"
     document_id = document.id
     owner_id = document.user_id
-    original_path = Path(document.file_path)
-    staged_path = original_path.with_name(
-        f".{original_path.name}.{uuid.uuid4().hex}.deleting"
-    )
+    try:
+        original_path = resolve_user_file_path(owner_id, document.file_path, must_exist=False)
+        staged_path = build_staging_path(
+            owner_id, document_id, purpose="delete", existing_path=original_path
+        )
+    except UnsafeStoragePathError as exc:
+        await log_security_event(
+            str(current_user.id), document.filename, f"Delete blocked: {exc}",
+            request.client.host if request.client else "unknown", audit_log.ACCESS_DENIED,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document storage path is unsafe; deletion rejected.",
+        ) from exc
     staged_file = False
 
     # Move the file aside first so a failed database delete can restore it.

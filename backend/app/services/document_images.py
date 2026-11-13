@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import errno
 import logging
-import shutil
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -26,6 +27,12 @@ from backend.app.models.document import Document
 from backend.app.models.document_image import DocumentImage
 from backend.app.services import audit_log
 from backend.app.services.ocr import OCRFailure, get_ocr_client
+from backend.app.services.storage_paths import (
+    UnsafeStoragePathError,
+    _assert_contained,
+    _check_no_symlinks,
+    user_storage_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,15 +52,55 @@ class ImageOCR:
 
 def image_folder(user_id: uuid.UUID, document_id: uuid.UUID) -> Path:
     """Inside the owner's storage namespace (AL-139), one folder per document."""
-    from backend.app.services.document_ingest import user_storage_dir
+    owner_id = uuid.UUID(str(user_id))
+    doc_id = uuid.UUID(str(document_id))
+    base = user_storage_dir(owner_id)
+    _check_no_symlinks(base, ("images", str(doc_id)))
+    folder = base / "images" / str(doc_id)
+    _assert_contained(folder, base)
+    return folder
 
-    return user_storage_dir(user_id) / "images" / str(uuid.UUID(str(document_id)))
+
+def _safe_rmtree_fd(dir_fd: int) -> None:
+    """Recursively clear a directory via an already-opened ``O_NOFOLLOW`` descriptor."""
+    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    with os.scandir(dir_fd) as entries:
+        for entry in entries:
+            if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                os.unlink(entry.name, dir_fd=dir_fd)
+            else:
+                sub_fd = os.open(entry.name, dir_flags, dir_fd=dir_fd)
+                try:
+                    _safe_rmtree_fd(sub_fd)
+                finally:
+                    os.close(sub_fd)
+                os.rmdir(entry.name, dir_fd=dir_fd)
 
 
 def remove_image_files(user_id: uuid.UUID, document_id: uuid.UUID) -> None:
     folder = image_folder(user_id, document_id)
-    if folder.is_dir():
-        shutil.rmtree(folder, ignore_errors=True)
+    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        dir_fd = os.open(folder, dir_flags)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise UnsafeStoragePathError("Image folder must not be a symlink.") from exc
+        raise
+
+    try:
+        _safe_rmtree_fd(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+    parent_fd = os.open(folder.parent, dir_flags)
+    try:
+        os.rmdir(folder.name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        pass
+    finally:
+        os.close(parent_fd)
 
 
 async def clear_document_images(db: AsyncSession, document: Document) -> None:
@@ -78,6 +125,8 @@ async def process_document_images(db: AsyncSession, document: Document, layout: 
     """Save every layout image, OCR them and return results keyed by image index."""
     folder = image_folder(document.user_id, document.id)
     folder.mkdir(parents=True, exist_ok=True)
+    folder = image_folder(document.user_id, document.id)
+    resolved_folder = folder.resolve()
     results: dict[int, ImageOCR] = {}
     rows: dict[int, DocumentImage] = {}
     payloads: dict[int, bytes] = {}
@@ -92,9 +141,21 @@ async def process_document_images(db: AsyncSession, document: Document, layout: 
         ext = str(item.get("ext") or "png").lower()
         if not ext.isalnum() or len(ext) > 5:
             ext = "img"
-        path = folder / f"{index}.{ext}"
+        leaf = f"{index}.{ext}"
+        _check_no_symlinks(folder, (leaf,))
+        path = folder / leaf
+        if path.resolve().parent != resolved_folder:
+            raise UnsafeStoragePathError("Image path escapes document image folder.")
         if data:
-            path.write_bytes(data)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags, 0o600)
+            try:
+                handle = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)
+                raise
+            with handle:
+                handle.write(data)
         rows[index] = DocumentImage(
             id=image_id, document_id=document.id, user_id=document.user_id, image_index=index,
             page=item.get("page"), bbox=item.get("bbox"), width=item.get("width"), height=item.get("height"),

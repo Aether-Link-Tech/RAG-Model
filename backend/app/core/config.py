@@ -65,6 +65,14 @@ class Settings(BaseConfig):
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen3:4b")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+    EMBEDDING_MODEL_VERSION: str = os.getenv(
+        "EMBEDDING_MODEL_VERSION", "nomic-embed-text:v1.5"
+    )
+    EMBEDDING_BATCH_SIZE: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+    EMBEDDING_MAX_RETRIES: int = int(os.getenv("EMBEDDING_MAX_RETRIES", "3"))
+    EMBEDDING_RETRY_BASE_DELAY: float = float(
+        os.getenv("EMBEDDING_RETRY_BASE_DELAY", "0.5")
+    )
 
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", DEFAULT_DEV_SECRET_KEY)
@@ -120,8 +128,12 @@ class Settings(BaseConfig):
     CLAMAV_QUARANTINE_DIR: str = os.getenv(
         "CLAMAV_QUARANTINE_DIR", "quarantine"
     )
+    # Character-based chunker used by the current upload pipeline (services/chunking.py)
     CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "1000"))
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "200"))
+    # Token-based, section-aware chunker (FR-016, services/text_chunking.py)
+    CHUNK_SIZE_TOKENS: int = int(os.getenv("CHUNK_SIZE_TOKENS", "800"))
+    CHUNK_OVERLAP_TOKENS: int = int(os.getenv("CHUNK_OVERLAP_TOKENS", "100"))
 
     # Parser Sandbox (FR-067 / AL-163 / AL-164)
     PARSER_SANDBOX_ENABLED: bool = os.getenv("PARSER_SANDBOX_ENABLED", "True").lower() in ("true", "1")

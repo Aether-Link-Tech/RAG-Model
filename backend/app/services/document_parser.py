@@ -20,6 +20,7 @@ from typing import Optional
 from backend.app.core.config import settings
 from backend.app.services.storage_paths import (
     UnsafeStoragePathError,
+    open_user_file_no_follow,
     resolve_user_file_path,
     validate_safe_filename,
 )
@@ -314,24 +315,32 @@ def _validate_parser_input_path(
     return resolved, safe_name
 
 
-def _start_stdin_feeder(proc: subprocess.Popen, path: Path) -> None:
+def _start_stdin_feeder(
+    proc: subprocess.Popen,
+    path: Path,
+    *,
+    owner_id: Optional[uuid.UUID | str] = None,
+) -> None:
     """Stream the document into the sandbox's stdin from a background thread."""
 
     def _feed() -> None:
         try:
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-            fd = os.open(path, flags)
-            try:
-                if not stat.S_ISREG(os.fstat(fd).st_mode):
-                    raise UnsafeStoragePathError("Parser input is not a regular file.")
-                source = os.fdopen(fd, "rb")
-            except BaseException:
-                os.close(fd)
-                raise
+            if owner_id is not None:
+                source = open_user_file_no_follow(owner_id, path)
+            else:
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                fd = os.open(path, flags)
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise UnsafeStoragePathError("Parser input is not a regular file.")
+                    source = os.fdopen(fd, "rb")
+                except BaseException:
+                    os.close(fd)
+                    raise
             with source:
                 while chunk := source.read(65536):
                     proc.stdin.write(chunk)
-        except (BrokenPipeError, OSError, ValueError):
+        except (BrokenPipeError, OSError, ValueError, UnsafeStoragePathError):
             pass  # container exited or was killed; the reader reports the error
         finally:
             try:
@@ -398,7 +407,7 @@ def extract_text_sandboxed(
             stderr=subprocess.PIPE,
         )
         if use_stdin:
-            _start_stdin_feeder(proc, resolved_path)
+            _start_stdin_feeder(proc, resolved_path, owner_id=owner_id)
         stdout, stderr = _communicate_with_limits(
             proc=proc,
             max_output_bytes=max_bytes,

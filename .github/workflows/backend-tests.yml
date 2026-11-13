@@ -42,6 +42,7 @@ jobs:
       CLAMAV_HOST: localhost
       CLAMAV_PORT: "3310"
       DEBUG: "false"
+      PARSER_INPUT_MODE: stdin
 
     steps:
       - uses: actions/checkout@v4

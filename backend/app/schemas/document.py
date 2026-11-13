@@ -36,3 +36,10 @@ class DocumentResponse(DocumentBase):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PublishResponse(DocumentResponse):
+    """Response of POST /documents/{id}/publish (AL-185): the new public document."""
+
+    # Set when the publish succeeded but a non-critical cleanup step did not.
+    warning: Optional[str] = None

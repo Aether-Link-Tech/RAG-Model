@@ -9,6 +9,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.crypto import email_index
 from backend.app.api.v1 import auth as auth_api
 from backend.app.core.config import Settings, settings
 from backend.app.core.roles import UserRole
@@ -391,7 +392,7 @@ async def test_login_requires_captcha_after_three_failures(
     user = await _make_user(db_session, created_user_ids)
     for _ in range(3):
         assert (await _login(async_client, user.email, "Wr0ng!Password")).status_code == 401
-    assert int(await fake_redis.get(f"login_fail:{user.email}")) == 3
+    assert int(await fake_redis.get(f"login_fail:{email_index(user.email)}")) == 3
 
     no_captcha = await _login(async_client, user.email, STRONG_PASSWORD)
     assert no_captcha.status_code == 400
@@ -404,7 +405,7 @@ async def test_login_requires_captcha_after_three_failures(
     ok = await _login(async_client, user.email, STRONG_PASSWORD, captcha_token="good-token")
     assert ok.status_code == 200
     # Success resets the counter.
-    assert await fake_redis.get(f"login_fail:{user.email}") is None
+    assert await fake_redis.get(f"login_fail:{email_index(user.email)}") is None
 
 
 @pytest.mark.asyncio
@@ -418,7 +419,7 @@ async def test_login_locks_for_15_minutes_after_five_failures(
         statuses.append(res.status_code)
     assert statuses == [401, 401, 401, 401, 423]
 
-    key = f"login_fail:{user.email}"
+    key = f"login_fail:{email_index(user.email)}"
     ttl = await fake_redis.ttl(key)
     assert 14 * 60 < ttl <= 15 * 60
 
@@ -438,7 +439,7 @@ async def test_unknown_email_gets_same_401_and_is_counted(async_client, fake_red
     res = await _login(async_client, email, STRONG_PASSWORD)
     assert res.status_code == 401
     assert res.json()["detail"] == "Invalid email or password"
-    assert int(await fake_redis.get(f"login_fail:{email}")) == 1
+    assert int(await fake_redis.get(f"login_fail:{email_index(email)}")) == 1
 
 
 @pytest.mark.asyncio

@@ -277,3 +277,48 @@ async def async_client() -> AsyncGenerator[httpx.AsyncClient, None]:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def audit_log_sessions():
+    """Audit rows are written in their own session; point it at the test engine."""
+    from backend.app.services import audit_log
+
+    audit_log.set_audit_session_factory(TestingSessionLocal)
+    yield
+    audit_log.set_audit_session_factory(None)
+
+
+@pytest_asyncio.fixture
+async def admin_user(db_session: AsyncSession) -> AsyncGenerator[User, None]:
+    """An active admin account (FR-004)."""
+    user_id = uuid.uuid4()
+    user = User(
+        id=user_id,
+        email=f"admin-{user_id.hex[:8]}@example.com",
+        hashed_password="admin_hashed_password",
+        role="admin",
+        is_verified=True,
+        is_deleted=False,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    yield user
+    await purge_test_users(user_id)
+
+
+def bearer(user: User) -> dict[str, str]:
+    from backend.app.core.security import create_access_token
+
+    return {"Authorization": f"Bearer {create_access_token(user.id, role=user.role)}"}
+
+
+def pytest_collection_modifyitems(config, items):
+    """Tag every test listed in the TC-ISO catalog with `isolation` and `tc_iso(<id>)` (AL-269)."""
+    from backend.tests.isolation_catalog import case_for
+
+    for item in items:
+        function = getattr(item, "originalname", None) or item.name.split("[")[0]
+        for case in case_for(item.path.name, function):
+            item.add_marker(pytest.mark.isolation)
+            item.add_marker(pytest.mark.tc_iso(case))

@@ -1,3 +1,4 @@
+import json
 import logging
 
 from fastapi import APIRouter, HTTPException, status
@@ -25,6 +26,25 @@ _INTERNAL_METADATA_KEYS = frozenset({"user_id"})
 
 def _public_metadata(metadata: dict) -> dict:
     return {k: v for k, v in metadata.items() if k not in _INTERNAL_METADATA_KEYS}
+
+
+def _source_fields(metadata: dict) -> dict:
+    """FR-061 / AL-246: expose where a chunk came from (text or an image on page X)."""
+    bbox = metadata.get("bbox")
+    if isinstance(bbox, str):
+        try:
+            bbox = json.loads(bbox)
+        except ValueError:
+            bbox = None
+    page = metadata.get("page")
+    confidence = metadata.get("ocr_confidence")
+    return {
+        "source_type": "ocr" if metadata.get("source_type") == "ocr" else "text",
+        "page": int(page) if isinstance(page, (int, float)) else None,
+        "bbox": [float(v) for v in bbox] if isinstance(bbox, list) and len(bbox) == 4 else None,
+        "image_id": metadata.get("image_id") if isinstance(metadata.get("image_id"), str) else None,
+        "ocr_confidence": float(confidence) if isinstance(confidence, (int, float)) else None,
+    }
 
 
 @router.post("/query", response_model=RetrievalResponse)
@@ -72,6 +92,7 @@ async def retrieve_for_current_user(
                 distance=hit.distance,
                 visibility=hit.visibility,
                 metadata=_public_metadata(hit.metadata),
+                **_source_fields(hit.metadata),
             )
             for hit in hits
         ],

@@ -1,0 +1,27 @@
+# Public entry point for the local stack (FR-007 / AL-137).
+# - https://localhost with a certificate from Caddy's local CA (`tls internal`)
+# - TLS 1.3 only
+# - http:// requests are redirected to https:// (Caddy automatic HTTPS)
+# Trust the local CA once to remove the browser warning:
+#   docker compose exec caddy caddy trust   (or import /data/caddy/pki/authorities/local/root.crt)
+{
+	admin off
+}
+
+{$SITE_ADDRESS:localhost} {
+	tls internal {
+		protocols tls1.3
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	encode zstd gzip
+
+	# The frontend container serves the app and proxies /api to the backend.
+	reverse_proxy frontend:80 {
+		header_up X-Forwarded-Proto https
+	}
+}

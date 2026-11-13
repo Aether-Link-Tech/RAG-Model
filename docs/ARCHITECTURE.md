@@ -404,13 +404,66 @@ Outside development, startup refuses the default `SECRET_KEY`, a `postgres` runt
 
 1. Add the SQLAlchemy model in `backend/app/models/` and import it in `models/__init__.py`.
 2. Run `alembic -c backend/alembic.ini revision --autogenerate -m "..."` and **review** the generated file.
-3. In the same migration:
-   - `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE <t> TO rag_app;` (grant only what's needed)
-   - `ALTER TABLE <t> ENABLE ROW LEVEL SECURITY; ALTER TABLE <t> FORCE ROW LEVEL SECURITY;`
-   - `CREATE POLICY ...` that uses `current_setting('app.user_id', true)`
-   - matching `DROP POLICY / REVOKE` in `downgrade()`
-4. Run `alembic upgrade head`, then `pytest`. Add a cross-user test (User B gets 0 rows).
-5. Without step 3, every request that touches the table fails with **permission denied**.
+3. In the same migration, protect the table with the shared helper (FR-072):
+   ```python
+   from backend.app.db.rls_policies import owner_rls_sql, drop_owner_rls_sql
+
+   def upgrade():
+       op.create_table("document_chunks", ...)          # must have a user_id column
+       for statement in owner_rls_sql("document_chunks"):
+           op.execute(statement)                         # GRANT + ENABLE/FORCE RLS + owner policy
+
+   def downgrade():
+       for statement in drop_owner_rls_sql("document_chunks"):
+           op.execute(statement)
+       op.drop_table("document_chunks")
+   ```
+   Options: `privileges="SELECT, INSERT"` to grant less, `admin_can_read=True` only for
+   data admins may see (never for document text or conversations). Tables with special
+   rules (e.g. `documents` public/private, `security_audit_log`) keep hand-written policies.
+4. Run `alembic upgrade head`, then `pytest`. Add rows to `backend/tests/test_rls_per_table.py`
+   for the new table (user B and an unauthenticated connection get 0 rows).
+5. `backend/tests/test_rls_guard.py` fails CI for any table without FORCE RLS and a policy;
+   exemptions (`users`, `alembic_version`) are listed there with their reasons.
+6. Without step 3, every request that touches the table fails with **permission denied**.
+
+Run only the isolation tests with `pytest -m isolation`.
+
+**Isolation suite (FR-075).** `backend/tests/isolation_catalog.py` maps TC-ISO-01 … TC-ISO-10
+(documents, document actions, conversations, citations, chunks, files, vector store, search,
+collections/roles, cross-layer integrity) to the tests that prove them; CI runs
+`pytest -m isolation` as its own step on every PR. Add new layers' tests to the catalog.
+
+**Near-duplicate detection (FR-081).** After text extraction, `services/near_duplicate.py` builds a
+128-permutation MinHash over word 3-grams and looks up candidates through 42 LSH bands of 3
+(`document_fingerprint_bands`, indexed on `(band, hash)`), then scores them exactly. An upload
+≥ 50 % similar to the caller's own or a public document is rejected with 409 naming that
+document, and removed (row, file); a replacement that duplicates another document is marked
+failed with the same message. RLS on the fingerprint tables only exposes the caller's own and
+public fingerprints, so another user's private document can never match or be named.
+Benchmark: 398 ms against 10,000 fingerprinted documents (requirement < 5 s).
+
+**OCR of images in documents (FR-058 – FR-063).** With `OCR_ENABLED=true`, PDF and DOCX files
+go through the parser sandbox a second time in *layout* mode (`PARSER_MODE=layout`), which
+returns text blocks and embedded images (base64, ≤ 40 images / 20 MB) in reading order with
+page and bounding box; all sandbox flags stay the same. Images are stored in the owner's
+folder (`<UPLOAD_DIR>/users/<id>/documents/images/<document_id>/`) and in `document_images`
+(owner-only RLS). Florence-2-base reads them **inside the backend process** (no external API;
+downloaded once into the Hugging Face cache) within `OCR_DOCUMENT_BUDGET_SECONDS` (30 s) per
+document. OCR text is inserted at the image's position (`services/ocr_merge.py`); chunks carry
+`source_type` (`text` / `ocr`), `page`, `bbox`, `image_id` and `ocr_confidence`, and search
+results expose them so the UI can show "source: image on page X". A failed, corrupt or timed-out
+image is skipped, logged and written to the audit log (`ocr_image_skipped`); the document is
+still indexed. There is deliberately no second OCR model yet. Accuracy on the test set:
+`docs/OCR_ACCURACY.md` (`backend/tests/fixtures/ocr/evaluate.py`).
+
+**Integrity check (FR-075).** `python -m backend.app.scripts.integrity_check [--repair] [--json report.json]`
+compares PostgreSQL, ChromaDB and file storage: orphan or misplaced vectors (critical if a
+private chunk is in the public collection or another user's collection), missing files,
+files outside the owner's folder, indexed documents without vectors, orphan files.
+Read-only by default; `--repair` removes bad vectors and marks missing-file documents failed
+(never deletes files). Exit code 0 clean / 1 issues / 2 critical. Scheduled daily with
+`docker compose --profile ops up -d integrity-check`.
 
 ### 5.6 Vector store layout (ChromaDB)
 

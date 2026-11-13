@@ -70,6 +70,24 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # FR-074 / AL-266: verify user status is active from the database on every request.
+    # Tokens issued before quarantine must stop working immediately. Fail closed if unreadable.
+    try:
+        user_status = getattr(user, "status", None)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not verify user status",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    if user_status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is quarantined or inactive",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     # The database is the source of truth for roles. A token minted before a role
     # change (e.g. an admin was demoted) must not keep its old privileges.
     if token_payload["role"] != user.role:

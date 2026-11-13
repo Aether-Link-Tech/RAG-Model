@@ -16,6 +16,12 @@ class RetrievedChunkResponse(BaseModel):
     distance: float
     visibility: Literal["private", "public"]
     metadata: dict[str, Any]
+    # FR-061 / AL-246: where the text came from, so the UI can show "source: image on page X".
+    source_type: Literal["text", "ocr"] = "text"
+    page: Optional[int] = None
+    bbox: Optional[list[float]] = None
+    image_id: Optional[str] = None
+    ocr_confidence: Optional[float] = None
 
 
 class RetrievalResponse(BaseModel):

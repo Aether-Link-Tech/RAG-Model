@@ -69,13 +69,22 @@ def build_docker_run_command(
     docker_image: Optional[str] = None,
     memory_limit: Optional[str] = None,
     cpu_limit: Optional[str] = None,
+    input_mode: Optional[str] = None,
+    parser_mode: str = "text",
 ) -> list[str]:
     """Construct hardened docker run invocation for document parsing (AL-163 & AL-164).
+
+    parser_mode "layout" (FR-058) makes the runner return JSON with text blocks and
+    embedded images instead of plain text; every sandbox flag stays the same.
 
     Security constraints applied:
     - --network none: complete network isolation (no internet, no LAN, no host access).
     - --read-only: immutable root filesystem.
-    - -v host_path:container_path:ro: input file mounted strictly read-only.
+    - input_mode "mount" (default): -v host_path:container_path:ro, input file
+      mounted strictly read-only.
+    - input_mode "stdin": no host mount at all; the file is streamed through
+      stdin (-i). Needed when the backend itself runs in a container, where
+      its file paths don't exist on the Docker host.
     - --tmpfs /tmp:rw,noexec,nosuid,size=64m: isolated in-memory scratch space.
     - --security-opt no-new-privileges:true: blocks setuid/setgid privilege escalation.
     - --cap-drop ALL: drops all Linux capabilities.
@@ -114,6 +123,20 @@ def build_docker_run_command(
         cpus,
         "--pids-limit",
         "64",
+    ]
+    if parser_mode not in ("text", "layout"):
+        raise ValueError(f"Unsupported parser mode: {parser_mode!r}")
+    if parser_mode != "text":
+        cmd += ["-e", f"PARSER_MODE={parser_mode}"]
+    mode = (input_mode or settings.PARSER_INPUT_MODE or "mount").lower()
+    if mode == "stdin":
+        suffix = Path(container_input_path).suffix.lower()
+        cmd += ["-i", image, "-", mime_type or "", suffix]
+        return cmd
+    if mode != "mount":
+        raise ValueError(f"Unsupported PARSER_INPUT_MODE: {mode!r}")
+
+    cmd += [
         "-v",
         f"{host_file_path}:{container_input_path}:ro",
         image,
@@ -253,6 +276,25 @@ def _communicate_with_limits(
     return stdout_text, stderr_text
 
 
+def _start_stdin_feeder(proc: subprocess.Popen, path: Path) -> None:
+    """Stream the document into the sandbox's stdin from a background thread."""
+
+    def _feed() -> None:
+        try:
+            with open(path, "rb") as source:
+                while chunk := source.read(65536):
+                    proc.stdin.write(chunk)
+        except (BrokenPipeError, OSError, ValueError):
+            pass  # container exited or was killed; the reader reports the error
+        finally:
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+
+    threading.Thread(target=_feed, daemon=True).start()
+
+
 def extract_text_sandboxed(
     file_path: str | Path,
     mime_type: str,
@@ -264,6 +306,7 @@ def extract_text_sandboxed(
     cpu_limit: Optional[str] = None,
     max_output_bytes: Optional[int] = None,
     cancel_event: Optional[threading.Event] = None,
+    parser_mode: str = "text",
 ) -> str:
     """Execute text extraction inside an isolated Docker container with resource limits."""
     resolved_path = Path(file_path).resolve()
@@ -276,6 +319,7 @@ def extract_text_sandboxed(
     safe_name = resolved_path.name or Path(filename).name or "document"
     container_input_path = f"/input/{safe_name}"
 
+    use_stdin = (settings.PARSER_INPUT_MODE or "mount").lower() == "stdin"
     cmd = build_docker_run_command(
         container_name=container_name,
         host_file_path=str(resolved_path),
@@ -284,15 +328,19 @@ def extract_text_sandboxed(
         docker_image=docker_image,
         memory_limit=memory_limit,
         cpu_limit=cpu_limit,
+        parser_mode=parser_mode,
     )
 
     proc = None
     try:
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.PIPE if use_stdin else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        if use_stdin:
+            _start_stdin_feeder(proc, resolved_path)
         stdout, stderr = _communicate_with_limits(
             proc=proc,
             max_output_bytes=max_bytes,
@@ -455,3 +503,60 @@ def _extract_docx(path: Path) -> str:
 
     document = Document(str(path))
     return "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+
+# --- Layout extraction with embedded images (FR-058 / AL-236) ---------------------------
+
+_RUNNER_PATH = Path(__file__).resolve().parents[3] / "docker" / "parser" / "runner.py"
+
+
+def _load_runner_module():
+    """The sandbox runner, imported in-process (tests only, when the sandbox is disabled)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("rag_parser_runner", _RUNNER_PATH)
+    if spec is None or spec.loader is None:
+        raise UnsupportedDocumentError("Parser runner is not available for in-process layout extraction")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def extract_layout(
+    file_path: str,
+    mime_type: str,
+    filename: str,
+    *,
+    cancel_event: Optional[threading.Event] = None,
+) -> dict:
+    """Text blocks and embedded images in reading order (see docker/parser/runner.py).
+
+    Runs in the same hardened sandbox as extract_text; images come back base64-encoded in
+    the JSON output, capped by the runner (40 images, 20 MB) and by
+    PARSER_LAYOUT_MAX_OUTPUT_BYTES. Fails closed like extract_text.
+    """
+    import json
+
+    path = Path(file_path)
+    suffix = path.suffix.lower() or Path(filename).suffix.lower()
+    if not _is_supported_suffix(suffix, mime_type):
+        raise UnsupportedDocumentError("Only PDF, DOCX, and TXT files can be indexed in this sprint")
+
+    if settings.PARSER_SANDBOX_ENABLED:
+        raw = extract_text_sandboxed(
+            file_path,
+            mime_type,
+            filename,
+            cancel_event=cancel_event,
+            max_output_bytes=settings.PARSER_LAYOUT_MAX_OUTPUT_BYTES,
+            parser_mode="layout",
+        )
+        try:
+            layout = json.loads(raw)
+        except ValueError as exc:
+            raise ParserSandboxError("Parser returned an invalid layout") from exc
+    else:
+        layout = _load_runner_module().extract_layout(path, mime_type)
+    if not isinstance(layout, dict) or layout.get("version") != 1:
+        raise ParserSandboxError("Parser returned an unsupported layout version")
+    return layout

@@ -36,6 +36,7 @@ class Settings(BaseConfig):
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
+        "https://localhost",
     ]
 
     # Database:
@@ -74,6 +75,15 @@ class Settings(BaseConfig):
     REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
     # bcrypt work factor (AL-116 / AL-135). Values below 12 are rejected at startup.
     BCRYPT_ROUNDS: int = int(os.getenv("BCRYPT_ROUNDS", "12"))
+
+    # PII encryption at rest (FR-007): AES-256-GCM key and a separate HMAC key for
+    # equality lookups (blind index). Base64-encoded 32-byte values. In local
+    # development they are derived from SECRET_KEY when unset; elsewhere they are required.
+    PII_ENCRYPTION_KEY: str = os.getenv("PII_ENCRYPTION_KEY", "")
+    PII_INDEX_KEY: str = os.getenv("PII_INDEX_KEY", "")
+
+    # Security audit log (FR-069)
+    AUDIT_LOG_RETENTION_DAYS: int = int(os.getenv("AUDIT_LOG_RETENTION_DAYS", "90"))
 
     # Login lockout (FR-002 / AL-121)
     LOGIN_CAPTCHA_AFTER_FAILURES: int = int(os.getenv("LOGIN_CAPTCHA_AFTER_FAILURES", "3"))
@@ -120,6 +130,16 @@ class Settings(BaseConfig):
     PARSER_CPU_LIMIT: str = os.getenv("PARSER_CPU_LIMIT", "1.0")
     PARSER_TIMEOUT_SECONDS: int = int(os.getenv("PARSER_TIMEOUT_SECONDS", "60"))
     PARSER_MAX_OUTPUT_BYTES: int = int(os.getenv("PARSER_MAX_OUTPUT_BYTES", str(10 * 1024 * 1024)))
+    # "mount": bind-mount the file read-only (backend on the host).
+    # "stdin": stream the file through stdin (backend inside a container).
+    PARSER_INPUT_MODE: str = os.getenv("PARSER_INPUT_MODE", "mount")
+    # Layout mode returns embedded images as base64 (FR-058), so it needs a larger cap.
+    PARSER_LAYOUT_MAX_OUTPUT_BYTES: int = int(os.getenv("PARSER_LAYOUT_MAX_OUTPUT_BYTES", str(40 * 1024 * 1024)))
+
+    # OCR of images inside PDF / DOCX (FR-058 – FR-063), run in-process with local models.
+    OCR_ENABLED: bool = os.getenv("OCR_ENABLED", "False").lower() in ("true", "1")
+    OCR_DOCUMENT_BUDGET_SECONDS: float = float(os.getenv("OCR_DOCUMENT_BUDGET_SECONDS", "30"))
+    OCR_BATCH_SIZE: int = int(os.getenv("OCR_BATCH_SIZE", "4"))
 
     @property
     def migration_database_url(self) -> str:
@@ -174,6 +194,11 @@ class Settings(BaseConfig):
                 )
             if not self.SMTP_HOST.strip():
                 raise ValueError("SMTP_HOST is required outside development.")
+            if not self.PII_ENCRYPTION_KEY.strip() or not self.PII_INDEX_KEY.strip():
+                raise ValueError(
+                    "PII_ENCRYPTION_KEY and PII_INDEX_KEY must be set outside development "
+                    "(base64-encoded 32 random bytes each)."
+                )
 
     def model_post_init(self, __context: Any) -> None:
         self.validate_security_settings()

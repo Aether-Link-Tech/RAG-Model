@@ -9,7 +9,8 @@ WORKDIR /app
 # Install isolated parsing dependencies
 RUN pip install --no-cache-dir \
     PyPDF2==3.0.1 \
-    python-docx==1.1.2
+    python-docx==1.1.2 \
+    pymupdf==1.24.10
 
 COPY runner.py /app/runner.py
 

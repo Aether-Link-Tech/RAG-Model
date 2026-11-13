@@ -25,7 +25,11 @@ from backend.app.services import near_duplicate
 from backend.app.services.near_duplicate import NearDuplicateError
 from backend.app.services.document_images import clear_document_images, process_document_images, remove_image_files
 from backend.app.services.ocr_merge import chunks_from_segments, merge_layout, merged_text
-from backend.app.services.vector_store import Visibility, upsert_chunks
+from backend.app.services.vector_store import (
+    Visibility,
+    cleanup_stale_document_chunks,
+    upsert_chunks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +103,10 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
             {
                 **extra,
                 "document_id": str(document.id),
+                "chunk_id": ids[index],
                 "filename": document.filename,
                 "chunk_index": index,
+                "embedding_model": settings.EMBEDDING_MODEL_VERSION,
             }
             for index, (_, extra) in enumerate(chunk_items)
         ]
@@ -110,6 +116,12 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
             embeddings=embeddings,
             documents=chunks,
             metadatas=metadatas,
+            visibility=visibility,
+        )
+        cleanup_stale_document_chunks(
+            user_id=document.user_id,
+            document_id=document.id,
+            chunk_ids=ids,
             visibility=visibility,
         )
         if fingerprint is not None:

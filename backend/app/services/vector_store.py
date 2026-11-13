@@ -109,6 +109,35 @@ def upsert_chunks(
     )
 
 
+def cleanup_stale_document_chunks(
+    *,
+    user_id: uuid.UUID | str,
+    document_id: uuid.UUID | str,
+    chunk_ids: Sequence[str],
+    visibility: Visibility = "private",
+) -> None:
+    """Remove obsolete chunks after a document's replacement chunks are upserted."""
+    where = {
+        "$and": [
+            _owner_filter(user_id),
+            {"visibility": {"$eq": visibility}},
+            {"document_id": {"$eq": str(document_id)}},
+        ]
+    }
+    if visibility == "private":
+        collection = get_private_collection(user_id)
+        if collection is None:
+            return
+    else:
+        collection = get_public_collection()
+
+    existing_ids = collection.get(where=where, include=[])["ids"]
+    current_ids = set(chunk_ids)
+    stale_ids = [chunk_id for chunk_id in existing_ids if chunk_id not in current_ids]
+    if stale_ids:
+        collection.delete(ids=stale_ids, where=where)
+
+
 def query_for_user(
     *,
     user_id: uuid.UUID | str,

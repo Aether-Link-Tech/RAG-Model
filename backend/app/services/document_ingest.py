@@ -48,6 +48,8 @@ def _may_contain_images(document: Document) -> bool:
 async def index_document(db: AsyncSession, document: Document) -> Document:
     # Captured up front: a rollback expires ORM attributes, which must not lazy-load later.
     owner_id, document_id = document.user_id, document.id
+    # Fail closed before any DB or file operation if the stored path leaves owner_id's namespace.
+    safe_file_path = str(resolve_user_file_path(owner_id, document.file_path, must_exist=False))
     document.status = "processing"
     document.error_message = None
     await db.commit()
@@ -55,11 +57,13 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
 
     cancel_event = threading.Event()
     try:
+        safe_file_path = str(resolve_user_file_path(owner_id, document.file_path, must_exist=True))
         text = await asyncio.to_thread(
             extract_text,
-            document.file_path,
+            safe_file_path,
             document.mime_type,
             document.filename,
+            owner_id=owner_id,
             cancel_event=cancel_event,
         )
         # FR-058 – FR-061: OCR embedded images and merge their text in reading order.
@@ -68,9 +72,10 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
             await clear_document_images(db, document)
             layout = await asyncio.to_thread(
                 extract_layout,
-                document.file_path,
+                safe_file_path,
                 document.mime_type,
                 document.filename,
+                owner_id=owner_id,
                 cancel_event=cancel_event,
             )
             if layout.get("images"):
@@ -162,38 +167,14 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
     return document
 
 
-_SAFE_EXTENSION_RE = re.compile(r"^\.[a-z0-9]{1,10}$")
-
-
-class UnsafeStoragePathError(ValueError):
-    """A storage path would leave the owner's namespace."""
-
-
-def user_storage_dir(user_id: uuid.UUID) -> Path:
-    """`<UPLOAD_DIR>/users/<user_id>/documents` (AL-139)."""
-    return Path(settings.UPLOAD_DIR) / "users" / str(uuid.UUID(str(user_id))) / "documents"
-
-
-def build_storage_path(user_id: uuid.UUID, document_id: uuid.UUID, filename: str) -> str:
-    """Return `<UPLOAD_DIR>/users/<user_id>/documents/<document_id><.ext>` (AL-139).
-
-    Only the extension of the client filename is used, and only if it is a
-    plain `.abc123` suffix, so names like `../../x` or `a.pdf/..` can never
-    steer the write outside the owner's directory. The resolved path is
-    checked against that directory as a second guard.
-    """
-    owner_id = uuid.UUID(str(user_id))
-    doc_id = uuid.UUID(str(document_id))
-    extension = Path(filename).suffix.lower()
-    if extension and not _SAFE_EXTENSION_RE.match(extension):
-        raise UnsafeStoragePathError("Unsupported file extension.")
-
-    directory = user_storage_dir(owner_id)
-    target = directory / f"{doc_id}{extension}"
-    if not target.resolve().is_relative_to(directory.resolve()):
-        raise UnsafeStoragePathError("Storage path escapes the user namespace.")
-    os.makedirs(directory, exist_ok=True)
-    return str(target)
+from backend.app.services.storage_paths import (
+    UnsafeStoragePathError,
+    build_staging_path,
+    build_storage_path,
+    resolve_user_file_path,
+    user_storage_dir,
+    validate_safe_filename,
+)
 
 
 async def reindex_document_in_background(

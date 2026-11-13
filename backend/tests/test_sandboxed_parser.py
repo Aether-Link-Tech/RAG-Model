@@ -371,11 +371,16 @@ async def test_index_document_marks_failed_on_parser_sandbox_error():
     mock_db.commit = _async_noop
     mock_db.refresh = _async_noop
 
+    from backend.app.services.storage_paths import build_storage_path
+
+    doc_id, user_id = uuid.uuid4(), uuid.uuid4()
+    file_path = build_storage_path(user_id, doc_id, "corrupted.pdf")
+    Path(file_path).write_bytes(b"%PDF-1.4")
     doc = Document(
-        id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
+        id=doc_id,
+        user_id=user_id,
         filename="corrupted.pdf",
-        file_path="/tmp/corrupted.pdf",
+        file_path=file_path,
         mime_type="application/pdf",
         file_size=1024,
         file_hash="dummy_hash",
@@ -399,11 +404,16 @@ async def test_index_document_marks_failed_on_output_limit_exceeded():
     mock_db.commit = _async_noop
     mock_db.refresh = _async_noop
 
+    from backend.app.services.storage_paths import build_storage_path
+
+    doc_id, user_id = uuid.uuid4(), uuid.uuid4()
+    file_path = build_storage_path(user_id, doc_id, "huge.pdf")
+    Path(file_path).write_bytes(b"%PDF-1.4")
     doc = Document(
-        id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
+        id=doc_id,
+        user_id=user_id,
         filename="huge.pdf",
-        file_path="/tmp/huge.pdf",
+        file_path=file_path,
         mime_type="application/pdf",
         file_size=2048,
         file_hash="dummy_hash_huge",
@@ -427,11 +437,16 @@ async def test_index_document_actual_asyncio_cancellation_marks_failed():
     mock_db.commit = _async_noop
     mock_db.refresh = _async_noop
 
+    from backend.app.services.storage_paths import build_storage_path
+
+    doc_id, user_id = uuid.uuid4(), uuid.uuid4()
+    file_path = build_storage_path(user_id, doc_id, "cancelled.pdf")
+    Path(file_path).write_bytes(b"%PDF-1.4")
     doc = Document(
-        id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
+        id=doc_id,
+        user_id=user_id,
         filename="cancelled.pdf",
-        file_path="/tmp/cancelled.pdf",
+        file_path=file_path,
         mime_type="application/pdf",
         file_size=1024,
         file_hash="dummy_hash_cancel",

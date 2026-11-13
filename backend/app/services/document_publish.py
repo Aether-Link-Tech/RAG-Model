@@ -35,10 +35,13 @@ from backend.app.models.document_image import DocumentImage
 from backend.app.models.fingerprint import DocumentFingerprint
 from backend.app.services.document_images import image_folder
 from backend.app.services import audit_log, near_duplicate
-from backend.app.services.document_ingest import (
+from backend.app.services.document_ingest import index_document
+from backend.app.services.storage_paths import (
     UnsafeStoragePathError,
     build_storage_path,
-    index_document,
+    create_exclusive_staging_file,
+    open_user_file_no_follow,
+    resolve_user_file_path,
 )
 from backend.app.services.vector_store import (
     copy_private_chunks_to_public,
@@ -95,19 +98,19 @@ def _remove_file(path: str | Path | None) -> bool:
     return True
 
 
-def _copy_file(source: str, destination: str) -> None:
-    """Copy via a temporary name so a partial file never sits at `destination`."""
-    tmp = f"{destination}.{uuid.uuid4().hex}.tmp"
+def _copy_file(owner_id: uuid.UUID, new_id: uuid.UUID, source: Path, destination: str) -> None:
+    """Copy via an exclusive staging file inside ``owner_id``'s directory."""
+    tmp_path, dst_file = create_exclusive_staging_file(
+        owner_id, new_id, source.name, purpose="publish"
+    )
     try:
-        shutil.copyfile(source, tmp)
-        os.replace(tmp, destination)
+        with dst_file, open_user_file_no_follow(owner_id, source) as src_file:
+            shutil.copyfileobj(src_file, dst_file)
+            dst_file.flush()
+        os.replace(tmp_path, destination)
     except BaseException:
-        _remove_file(tmp)
+        _remove_file(tmp_path)
         raise
-
-
-def _inside_upload_root(path: str) -> bool:
-    return Path(path).resolve().is_relative_to(Path(settings.UPLOAD_DIR).resolve())
 
 
 async def _safe_rollback(db: AsyncSession) -> None:
@@ -164,10 +167,9 @@ async def publish_private_document(
     new_id = uuid.uuid4()
     new_path: str | None = None
     try:
-        if not old_path or not _inside_upload_root(old_path):
-            raise OSError("stored path outside the upload area")
-        new_path = build_storage_path(owner_id, new_id, Path(old_path).name)
-        await asyncio.to_thread(_copy_file, old_path, new_path)
+        resolved_old_path = resolve_user_file_path(owner_id, old_path, must_exist=True)
+        new_path = build_storage_path(owner_id, new_id, resolved_old_path.name)
+        await asyncio.to_thread(_copy_file, owner_id, new_id, resolved_old_path, new_path)
     except (OSError, UnsafeStoragePathError, ValueError) as exc:
         logger.exception("Publish: could not copy file for document %s", old_id)
         _remove_file(new_path)
@@ -281,7 +283,7 @@ async def publish_private_document(
         warning = "The document was published, but its old private index entries could not be removed."
 
     # --- 6. Remove the old private file (the publish already succeeded).
-    if not _remove_file(old_path):
+    if not _remove_file(resolved_old_path):
         logger.error("Publish: old private file for document %s could not be removed", old_id)
 
     await _audit_published(owner_id, audit_filename, old_id, new_id, client_ip)

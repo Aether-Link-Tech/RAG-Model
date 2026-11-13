@@ -81,8 +81,10 @@ def _quarantined_files(qdir: Path) -> list[Path]:
     return [p for p in qdir.rglob("*") if p.is_file()] if qdir.exists() else []
 
 
-def test_infected_file_is_moved_to_per_user_quarantine(tmp_path, quarantine_dir, fake_clamd):
-    staged = tmp_path / "upload.tmp"
+def test_infected_file_is_moved_to_per_user_quarantine(quarantine_dir, fake_clamd):
+    from backend.app.services.storage_paths import user_storage_dir
+
+    staged = user_storage_dir(USER_ID, create=True) / "upload.tmp"
     staged.write_bytes(FAKE_INFECTED)
 
     with pytest.raises(clamav.InfectedFileError) as info:
@@ -95,8 +97,10 @@ def test_infected_file_is_moved_to_per_user_quarantine(tmp_path, quarantine_dir,
     assert _quarantined_files(quarantine_dir) == [target]
 
 
-def test_clean_file_is_left_in_place(tmp_path, quarantine_dir, fake_clamd):
-    staged = tmp_path / "upload.tmp"
+def test_clean_file_is_left_in_place(quarantine_dir, fake_clamd):
+    from backend.app.services.storage_paths import user_storage_dir
+
+    staged = user_storage_dir(USER_ID, create=True) / "upload.tmp"
     staged.write_bytes(b"clean document text")
     clamav.scan_and_quarantine(str(staged), USER_ID, DOC_ID)
     assert staged.exists()
@@ -104,9 +108,11 @@ def test_clean_file_is_left_in_place(tmp_path, quarantine_dir, fake_clamd):
 
 
 @pytest.mark.parametrize("kwargs", [{"fail": True}, {"ping": "NOPE"}])
-def test_scanner_unavailable_fails_closed(tmp_path, quarantine_dir, fake_clamd, kwargs):
+def test_scanner_unavailable_fails_closed(quarantine_dir, fake_clamd, kwargs):
+    from backend.app.services.storage_paths import user_storage_dir
+
     fake_clamd(**kwargs)
-    staged = tmp_path / "upload.tmp"
+    staged = user_storage_dir(USER_ID, create=True) / "upload.tmp"
     staged.write_bytes(b"anything")
     with pytest.raises(clamav.ClamAVUnavailableError):
         clamav.scan_and_quarantine(str(staged), USER_ID, DOC_ID)

@@ -24,7 +24,6 @@ from backend.app.core.roles import UserRole
 from backend.app.models.document import Document
 from backend.app.schemas.document import DocumentResponse, PublishResponse, Visibility
 from backend.app.services import audit_log
-from backend.app.services.near_duplicate import NearDuplicateError
 from backend.app.services.document_images import remove_image_files
 from backend.app.services.clamav import (
     ClamAVUnavailableError,
@@ -36,6 +35,7 @@ from backend.app.services.document_ingest import (
     index_document,
     reindex_document_in_background,
 )
+from backend.app.tasks.document_tasks import process_document
 from backend.app.services.document_publish import PublishError, publish_private_document
 from backend.app.services.hash_service import (
     FileSizeLimitExceededError,
@@ -466,27 +466,20 @@ async def upload_document(
 
     await db.refresh(document)
     try:
-        indexed = await index_document(db, document)
-    except NearDuplicateError as exc:
-        # FR-081: the upload is rejected and removed cleanly (row, file; no vectors were written).
-        await _discard_rejected_upload(db, document)
-        await log_security_event(
-            user_id_str, filename_str, "Near-duplicate of an existing document", client_ip,
-        )
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    return _to_response(indexed, current_user.id)
-
-
-async def _discard_rejected_upload(db: DbSession, document: Document) -> None:
-    file_path, owner_id, document_id = document.file_path, document.user_id, document.id
-    remove_image_files(owner_id, document_id)
-    try:
-        await db.delete(document)
-        await db.commit()
-    except Exception:
+        process_document.delay(str(document.id), str(current_user.id), current_user.role)
+    except Exception as exc:
+        logger.exception("Could not queue indexing job for document %s", document.id)
         await _safe_rollback(db)
-        logger.exception("Could not remove rejected near-duplicate document %s", document.id)
-    _best_effort_remove(file_path)
+        document = await db.get(Document, document_id)
+        if document is not None:
+            document.status = "failed"
+            document.error_message = "Could not queue the indexing job"
+            await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document was uploaded, but its indexing job could not be queued. Please retry.",
+        ) from exc
+    return _to_response(document, current_user.id)
 
 
 def _to_response(document: Document, caller_id: uuid.UUID) -> DocumentResponse:
@@ -868,7 +861,20 @@ async def update_document(
 
     if old_path != document.file_path:
         _best_effort_remove(old_path)
-    background_tasks.add_task(reindex_document_in_background, doc_id, actor_id, actor_role)
+    try:
+        process_document.delay(str(doc_id), str(actor_id), actor_role)
+    except Exception as exc:
+        logger.exception("Could not queue indexing job for document %s", doc_id)
+        await _safe_rollback(db)
+        document = await db.get(Document, doc_id)
+        if document is not None:
+            document.status = "failed"
+            document.error_message = "Could not queue the indexing job"
+            await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document was replaced, but its indexing job could not be queued. Please retry.",
+        ) from exc
     await db.refresh(document)
     return _to_response(document, actor_id)
 

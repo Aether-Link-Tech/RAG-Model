@@ -50,6 +50,15 @@ class Settings(BaseConfig):
 
     # Redis
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    CELERY_BROKER_URL: str = os.getenv(
+        "CELERY_BROKER_URL", os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    )
+    CELERY_RESULT_BACKEND: str = os.getenv(
+        "CELERY_RESULT_BACKEND", os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    )
+    CELERY_TASK_ALWAYS_EAGER: bool = os.getenv(
+        "CELERY_TASK_ALWAYS_EAGER", "False"
+    ).lower() in ("true", "1")
 
     # ChromaDB
     CHROMA_HOST: str = os.getenv("CHROMA_HOST", "localhost")

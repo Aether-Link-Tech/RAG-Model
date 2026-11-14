@@ -471,6 +471,14 @@ alembic -c backend/alembic.ini upgrade head
 
 Or switch to the backend directory first: `cd backend && alembic upgrade head`.
 
+### Running the worker
+
+From the repository root, start a Celery worker with:
+
+```bash
+conda run -n rag-model celery -A backend.app.core.celery_app:celery_app worker --loglevel=info
+```
+
 </details>
 
 <details>

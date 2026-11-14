@@ -436,3 +436,39 @@ async def test_publishing_moves_extracted_images_to_the_public_copy(async_client
     new_folder = image_folder(test_user.id, uuid.UUID(public_id))
     assert all(Path(i.file_path).parent == new_folder and Path(i.file_path).exists() for i in images)
     assert not image_folder(test_user.id, uuid.UUID(private_id)).exists()  # nothing left behind
+
+
+# --- AL-241: offline-first model loading -------------------------------------------------
+class _FakeModel:
+    def eval(self):
+        return self
+
+
+def _fake_loader(calls, cached):
+    class Loader:
+        @staticmethod
+        def from_pretrained(repo, **kwargs):
+            calls.append(kwargs.get("local_files_only", False))
+            if kwargs.get("local_files_only") and not cached:
+                raise OSError("not in local cache")
+            return _FakeModel()
+
+    return Loader
+
+
+def test_cached_florence_loads_without_network():
+    from types import SimpleNamespace
+    from backend.app.services.ocr_engines import load_florence
+
+    calls: list[bool] = []
+    load_florence(_fake_loader(calls, True), _fake_loader(calls, True), SimpleNamespace(float32="f32"))
+    assert calls == [True, True]  # cache only, never the hub
+
+
+def test_missing_florence_is_downloaded_once():
+    from types import SimpleNamespace
+    from backend.app.services.ocr_engines import load_florence
+
+    calls: list[bool] = []
+    load_florence(_fake_loader(calls, False), _fake_loader(calls, False), SimpleNamespace(float32="f32"))
+    assert calls == [True, False, False]  # cache miss, then one online load of each part

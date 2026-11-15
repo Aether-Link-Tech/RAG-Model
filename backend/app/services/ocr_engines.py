@@ -53,6 +53,20 @@ def decode(data: bytes) -> Image.Image:
     return image
 
 
+def load_florence(processor_cls, model_cls, torch):
+    """Load Florence-2 from the local Hugging Face cache first, so a cached model never touches
+    the network (offline-first; an unreachable hub otherwise burns the whole OCR time budget).
+    Only when the model is not cached yet is it downloaded once from the hub."""
+    try:
+        processor = processor_cls.from_pretrained(FLORENCE_REPO, local_files_only=True)
+        model = model_cls.from_pretrained(FLORENCE_REPO, dtype=torch.float32, local_files_only=True)
+    except OSError:
+        logger.info("Florence-2 not in the local cache; downloading %s once", FLORENCE_REPO)
+        processor = processor_cls.from_pretrained(FLORENCE_REPO)
+        model = model_cls.from_pretrained(FLORENCE_REPO, dtype=torch.float32)
+    return processor, model.eval()
+
+
 class Florence2Engine:
     name = "florence-2-base"
 
@@ -61,8 +75,7 @@ class Florence2Engine:
         from transformers import AutoProcessor, Florence2ForConditionalGeneration
 
         self._torch = torch
-        self.processor = AutoProcessor.from_pretrained(FLORENCE_REPO)
-        self.model = Florence2ForConditionalGeneration.from_pretrained(FLORENCE_REPO, dtype=torch.float32).eval()
+        self.processor, self.model = load_florence(AutoProcessor, Florence2ForConditionalGeneration, torch)
 
     def recognize(self, images: Sequence[Image.Image]) -> list[tuple[str, float]]:
         torch = self._torch

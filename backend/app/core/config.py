@@ -63,7 +63,8 @@ class Settings(BaseConfig):
 
     # Ollama
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen3:4b")
+    # qwen2.5:3b answers in ~15 s on CPU; qwen3:4b spends minutes reasoning (see .env.example).
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen2.5:3b")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
     EMBEDDING_MODEL_VERSION: str = os.getenv(
         "EMBEDDING_MODEL_VERSION", "nomic-embed-text:v1.5"
@@ -73,6 +74,18 @@ class Settings(BaseConfig):
     EMBEDDING_RETRY_BASE_DELAY: float = float(
         os.getenv("EMBEDDING_RETRY_BASE_DELAY", "0.5")
     )
+
+    # Question answering (Sprint 3: FR-028 / FR-030 / FR-031 / FR-046)
+    LLM_TIMEOUT_SECONDS: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
+    LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+    QA_RETRIEVAL_K: int = int(os.getenv("QA_RETRIEVAL_K", "8"))
+    QA_MAX_CONTEXT_TOKENS: int = int(os.getenv("QA_MAX_CONTEXT_TOKENS", "6000"))
+    # Cosine distance at or above this is "not relevant enough" to answer from (FR-032 refines it).
+    QA_MAX_DISTANCE: float = float(os.getenv("QA_MAX_DISTANCE", "0.65"))
+    # FR-046: answers backed by fewer sources, or only weak matches, are flagged as uncertain.
+    QA_UNCERTAIN_MIN_SOURCES: int = int(os.getenv("QA_UNCERTAIN_MIN_SOURCES", "2"))
+    # Calibrated on nomic-embed-text: correct single-passage answers scored 0.64-0.72 similarity.
+    QA_UNCERTAIN_MAX_DISTANCE: float = float(os.getenv("QA_UNCERTAIN_MAX_DISTANCE", "0.5"))
 
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", DEFAULT_DEV_SECRET_KEY)

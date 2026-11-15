@@ -39,8 +39,17 @@ def sanitize_passage(text: str) -> str:
     return _BREAKOUT.sub(lambda m: m.group(0).replace("<", "‹").replace(">", "›"), text)
 
 
-def _label(index: int, passage: Passage) -> str:
-    parts = [f"[{index}] {passage.document_name}"]
+COMPARISON_RULES = """
+This question compares several documents (FR-034):
+- Passages are grouped by document (Document A, Document B, ...).
+- Say what each document states, attributing every point to its document by name, with its [n] markers.
+- State clearly where the documents agree, where they differ, and where they contradict each other.
+- Never merge statements from different documents into one claim."""
+
+
+def _label(index: int, passage: Passage, letter: str | None = None) -> str:
+    prefix = f"Document {letter}: " if letter else ""
+    parts = [f"[{index}] {prefix}{passage.document_name}"]
     if passage.page:
         parts.append(f"page {passage.page}")
     if passage.section:
@@ -50,11 +59,18 @@ def _label(index: int, passage: Passage) -> str:
     return ", ".join(parts)
 
 
-def build_messages(question: str, passages: Sequence[Passage], model: str = "") -> list[dict[str, str]]:
-    blocks = [f"{_label(i, p)}\n{sanitize_passage(p.text)}" for i, p in enumerate(passages, start=1)]
+def build_messages(question: str, passages: Sequence[Passage], model: str = "",
+                   comparison: bool = False) -> list[dict[str, str]]:
+    letters: dict[str, str] = {}
+    if comparison:
+        for p in passages:
+            letters.setdefault(p.document_id, chr(ord("A") + len(letters)))
+    blocks = [f"{_label(i, p, letters.get(p.document_id))}\n{sanitize_passage(p.text)}"
+              for i, p in enumerate(passages, start=1)]
     context = "\n\n".join(blocks)
     user = f"<context>\n{context}\n</context>\n\nQuestion: {question.strip()}{no_think_suffix(model)}"
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+    system = SYSTEM_PROMPT + (COMPARISON_RULES if comparison else "")
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def strip_reasoning(text: str) -> str:

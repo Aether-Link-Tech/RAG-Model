@@ -11,6 +11,7 @@ changing the endpoint or the contract.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass, replace
 from typing import AsyncIterator, Sequence
@@ -19,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.schemas.chat import ChatAnswer, ChatSource
-from backend.app.services import answer_confidence, answer_verification, grounded_prompt, llm, prompt_injection
+from backend.app.services import answer_confidence, answer_verification, grounded_prompt, llm, multi_doc, prompt_injection
 from backend.app.services.context_window import Passage, select_passages
 from backend.app.services.embedding import embed_query
 from backend.app.services.vector_store import RetrievedChunk, query_authorized_chunks
@@ -35,6 +36,7 @@ class PreparedQuestion:
     passages: list[Passage]          # what the model sees, numbered [1]..[n]
     messages: list[dict[str, str]]   # empty when there is nothing relevant to answer from
     injection_detected: bool = False  # FR-051: instruction-like text was removed from a passage
+    comparison: bool = False          # EP-06: passages from several documents are compared
 
 
 def _to_passage(hit: RetrievedChunk) -> Passage:
@@ -59,13 +61,14 @@ async def retrieve(
     question: str,
     include_public: bool = True,
     include_private: bool = True,
+    n_results: int | None = None,
 ) -> list[Passage]:
     vector = await embed_query(question)
     hits = await query_authorized_chunks(
         db=db,
         user_id=user_id,
         query_embedding=vector,
-        n_results=settings.QA_RETRIEVAL_K,
+        n_results=n_results or settings.QA_RETRIEVAL_K,
         include_public=include_public,
         include_private=include_private,
     )
@@ -81,11 +84,19 @@ async def prepare(
     include_public: bool = True,
     include_private: bool = True,
 ) -> PreparedQuestion:
-    found = await retrieve(db, user_id, question, include_public, include_private)
+    comparison = multi_doc.is_comparison(question)
+    fetch = settings.QA_MULTIDOC_FETCH if comparison else settings.QA_RETRIEVAL_K
+    found = await retrieve(db, user_id, question, include_public, include_private, n_results=fetch)
     found, injected = _remove_injected_instructions(found)
+    if comparison and multi_doc.document_count(found) >= 2:
+        found = multi_doc.per_document(found)  # FR-033: top passages per document
+    else:
+        comparison = False
+        found = sorted(found, key=lambda p: p.distance)[: settings.QA_RETRIEVAL_K]
     passages = select_passages(found, settings.QA_MAX_CONTEXT_TOKENS)
     enough = evidence_is_sufficient(passages)
-    messages = grounded_prompt.build_messages(question, passages, settings.LLM_MODEL) if enough else []
+    messages = (grounded_prompt.build_messages(question, passages, settings.LLM_MODEL, comparison=comparison)
+                if enough else [])
     return PreparedQuestion(
         question=question,
         conversation_id=conversation_id or uuid.uuid4(),
@@ -93,6 +104,7 @@ async def prepare(
         passages=passages,
         messages=messages,
         injection_detected=injected,
+        comparison=comparison,
     )
 
 
@@ -198,15 +210,40 @@ async def complete_answer(prepared: PreparedQuestion, raw_answer: str) -> ChatAn
     if check.removed:
         uncertain = True
         reason = f"{check.removed} statement(s) were removed because the sources do not support them."
+    comparison = None
+    final_text = check.answer
+    if prepared.comparison:
+        final_text = _name_documents(final_text, prepared.passages)
+        analysis = await multi_doc.compare([prepared.passages[m - 1] for m in supporting]
+                                           if len({prepared.passages[m - 1].document_id for m in supporting}) >= 2
+                                           else prepared.passages)
+        comparison = {"relation": analysis.relation, "documents": analysis.documents,
+                      "pairs": [vars(p) for p in analysis.pairs]}
+        final_text, false_agreements = multi_doc.drop_false_agreement(final_text, analysis)
+        if false_agreements:
+            check.removed += len(false_agreements)
+            check.claims.extend(answer_verification.ClaimCheck(s, [], False, 0.0, None, multi_doc.FALSE_AGREEMENT)
+                                for s in false_agreements)
+            uncertain = True
+            reason = f"{check.removed} statement(s) were removed because the sources do not support them."
     return _updated(
         result,
-        answer=check.answer,
+        comparison=comparison,
+        answer=final_text,
         sources=[_source(m, prepared.passages[m - 1]).model_dump() for m in supporting],
         claims=[vars(c) for c in check.claims],
         removed_claims=check.removed,
         uncertain=uncertain,
         uncertain_reason=reason,
     )
+
+
+def _name_documents(text: str, passages: Sequence[Passage]) -> str:
+    """Comparison prompts label documents A, B...; users see the real document names."""
+    letters = multi_doc.document_letters(passages)
+    names = {letter: next(p.document_name for p in passages if p.document_id == doc)
+             for doc, letter in letters.items()}
+    return re.sub(r"\bDocument ([A-Z])\b", lambda m: names.get(m.group(1), m.group(0)), text)
 
 
 def _updated(result: ChatAnswer, **changes) -> ChatAnswer:

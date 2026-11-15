@@ -58,6 +58,28 @@ Requires `Authorization: Bearer <access token>`.
 * `uncertain: true`: weak or single-passage support; show the "Uncertain" badge with `uncertain_reason` (FR-046).
 * Responses never contain `user_id` or other ownership metadata.
 
+Hallucination defence (EP-09) adds three fields:
+
+```json
+"claims": [
+  {"text": "Full-time staff receive 22 days of paid annual leave", "markers": [2],
+   "supported": true, "score": 0.881, "chunk_id": "a91d…:4", "reason": null},
+  {"text": "Contractors receive 40 days of leave", "markers": [2],
+   "supported": false, "score": 0.62, "chunk_id": null,
+   "reason": "A number in this statement does not appear in the cited source."}
+],
+"removed_claims": 1,
+"injection_detected": false
+```
+
+* `claims`: each statement of the answer, whether its cited passage supports it, and the chunk it is
+  linked to (FR-049, FR-044). Unsupported statements are **removed from `answer`**, counted in
+  `removed_claims`, and the answer is marked `uncertain`. If nothing is supported, the response is `insufficient`.
+* `injection_detected`: a retrieved passage contained instructions aimed at the assistant; they were
+  removed before the model saw the text (FR-051). If the model output itself looks injected, the answer is withheld.
+* Before calling the model, at least `QA_MIN_EVIDENCE_CHUNKS` (2) relevant passages, or one strong
+  passage, are required (FR-048).
+
 ### Response: `Accept: text/event-stream` (streaming)
 
 ```

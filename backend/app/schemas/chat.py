@@ -30,6 +30,17 @@ class ChatSource(BaseModel):
     score: float = Field(..., description="Similarity 0..1 (1 - cosine distance)")
 
 
+class ClaimCheck(BaseModel):
+    """FR-049 / FR-044: one statement of the answer and the source that supports it."""
+
+    text: str
+    markers: list[int] = []
+    supported: bool
+    score: float
+    chunk_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
 class ChatAnswer(BaseModel):
     conversation_id: uuid.UUID
     message_id: uuid.UUID
@@ -38,3 +49,7 @@ class ChatAnswer(BaseModel):
     insufficient: bool = False
     uncertain: bool = False
     uncertain_reason: Optional[str] = None
+    # EP-09 (additive): statement-level verification and what was removed.
+    claims: list[ClaimCheck] = []
+    removed_claims: int = 0
+    injection_detected: bool = False

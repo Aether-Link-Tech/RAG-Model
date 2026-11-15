@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import AsyncIterator, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.schemas.chat import ChatAnswer, ChatSource
-from backend.app.services import answer_confidence, grounded_prompt, llm
+from backend.app.services import answer_confidence, answer_verification, grounded_prompt, llm, prompt_injection
 from backend.app.services.context_window import Passage, select_passages
 from backend.app.services.embedding import embed_query
 from backend.app.services.vector_store import RetrievedChunk, query_authorized_chunks
@@ -34,6 +34,7 @@ class PreparedQuestion:
     message_id: uuid.UUID
     passages: list[Passage]          # what the model sees, numbered [1]..[n]
     messages: list[dict[str, str]]   # empty when there is nothing relevant to answer from
+    injection_detected: bool = False  # FR-051: instruction-like text was removed from a passage
 
 
 def _to_passage(hit: RetrievedChunk) -> Passage:
@@ -81,15 +82,40 @@ async def prepare(
     include_private: bool = True,
 ) -> PreparedQuestion:
     found = await retrieve(db, user_id, question, include_public, include_private)
+    found, injected = _remove_injected_instructions(found)
     passages = select_passages(found, settings.QA_MAX_CONTEXT_TOKENS)
-    messages = grounded_prompt.build_messages(question, passages, settings.LLM_MODEL) if passages else []
+    enough = evidence_is_sufficient(passages)
+    messages = grounded_prompt.build_messages(question, passages, settings.LLM_MODEL) if enough else []
     return PreparedQuestion(
         question=question,
         conversation_id=conversation_id or uuid.uuid4(),
         message_id=uuid.uuid4(),
         passages=passages,
         messages=messages,
+        injection_detected=injected,
     )
+
+
+def _remove_injected_instructions(passages: list[Passage]) -> tuple[list[Passage], bool]:
+    """FR-051: strip instruction-like sentences from document text before it reaches the model."""
+    cleaned, injected = [], False
+    for passage in passages:
+        result = prompt_injection.clean_passage(passage.text)
+        if result.removed:
+            injected = True
+            logger.warning("Removed %d instruction-like sentence(s) from chunk %s", result.removed, passage.chunk_id)
+        if result.text.strip():
+            cleaned.append(replace(passage, text=result.text))
+    return cleaned, injected
+
+
+def evidence_is_sufficient(passages: Sequence[Passage]) -> bool:
+    """FR-048: answer only with enough relevant passages, or a single strong one."""
+    if not passages:
+        return False
+    if len(passages) >= settings.QA_MIN_EVIDENCE_CHUNKS:
+        return True
+    return min(p.distance for p in passages) <= settings.QA_STRONG_EVIDENCE_DISTANCE
 
 
 def _source(marker: int, passage: Passage) -> ChatSource:
@@ -140,10 +166,58 @@ def finalize(prepared: PreparedQuestion, raw_answer: str) -> ChatAnswer:
     )
 
 
+async def complete_answer(prepared: PreparedQuestion, raw_answer: str) -> ChatAnswer:
+    """finalize() plus the EP-09 checks: compromised output (FR-051) and claim verification
+    with claim-to-passage links (FR-049 / FR-050 / FR-044)."""
+    result = finalize(prepared, raw_answer)
+    result.injection_detected = prepared.injection_detected
+    if result.insufficient:
+        return result
+    if prompt_injection.answer_is_compromised(result.answer):
+        logger.warning("Answer %s withheld: looks like injected output", prepared.message_id)
+        return _updated(result, answer=prompt_injection.REFUSAL, sources=[], claims=[], uncertain=True,
+                        uncertain_reason=prompt_injection.REFUSAL, injection_detected=True)
+    if not settings.QA_VERIFY_CLAIMS:
+        return result
+
+    check = await answer_verification.verify(result.answer, prepared.passages)
+    substantive = [c for c in check.claims if c.score < 1.0 or c.markers]
+    if substantive and not any(c.supported for c in substantive):
+        logger.info("Answer %s: no statement is supported by its sources", prepared.message_id)
+        return insufficient_answer(prepared)
+
+    n = len(prepared.passages)
+    markers = grounded_prompt.cited_markers(check.answer, n)
+    for claim in check.claims:  # FR-044: uncited statements linked to their source
+        for m in claim.markers:
+            if claim.supported and m not in markers:
+                markers.append(m)
+    supporting = markers or [s.marker for s in result.sources]
+    confidence = answer_confidence.assess([prepared.passages[m - 1].distance for m in supporting])
+    uncertain, reason = confidence.uncertain, confidence.reason
+    if check.removed:
+        uncertain = True
+        reason = f"{check.removed} statement(s) were removed because the sources do not support them."
+    return _updated(
+        result,
+        answer=check.answer,
+        sources=[_source(m, prepared.passages[m - 1]).model_dump() for m in supporting],
+        claims=[vars(c) for c in check.claims],
+        removed_claims=check.removed,
+        uncertain=uncertain,
+        uncertain_reason=reason,
+    )
+
+
+def _updated(result: ChatAnswer, **changes) -> ChatAnswer:
+    """A validated copy (model_copy would skip validation of nested sources/claims)."""
+    return ChatAnswer.model_validate({**result.model_dump(), **changes})
+
+
 async def answer(prepared: PreparedQuestion) -> ChatAnswer:
     if not prepared.messages:
         return insufficient_answer(prepared)
-    return finalize(prepared, await llm.complete(prepared.messages))
+    return await complete_answer(prepared, await llm.complete(prepared.messages))
 
 
 async def stream_answer(prepared: PreparedQuestion) -> AsyncIterator[tuple[str, object]]:
@@ -179,7 +253,7 @@ async def stream_answer(prepared: PreparedQuestion) -> AsyncIterator[tuple[str, 
         deciding = False
         yield "token", pending
     # The final answer is authoritative (clients replace the streamed text with it).
-    yield "done", finalize(prepared, "".join(pieces))
+    yield "done", await complete_answer(prepared, "".join(pieces))
 
 
 def sources_preview(passages: Sequence[Passage]) -> list[ChatSource]:

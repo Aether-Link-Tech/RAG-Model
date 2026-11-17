@@ -30,6 +30,34 @@ class ChatSource(BaseModel):
     score: float = Field(..., description="Similarity 0..1 (1 - cosine distance)")
 
 
+class ClaimCheck(BaseModel):
+    """FR-049 / FR-044: one statement of the answer and the source that supports it."""
+
+    text: str
+    markers: list[int] = []
+    supported: bool
+    score: float
+    chunk_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class ComparisonPair(BaseModel):
+    """FR-035: two statements on the same topic from different documents."""
+
+    relation: Literal["agree", "differ", "contradict"]
+    document_a: str
+    quote_a: str
+    document_b: str
+    quote_b: str
+    similarity: float
+
+
+class Comparison(BaseModel):
+    relation: Literal["agree", "differ", "contradict", "unrelated"]
+    documents: list[str]
+    pairs: list[ComparisonPair] = []
+
+
 class ChatAnswer(BaseModel):
     conversation_id: uuid.UUID
     message_id: uuid.UUID
@@ -38,3 +66,9 @@ class ChatAnswer(BaseModel):
     insufficient: bool = False
     uncertain: bool = False
     uncertain_reason: Optional[str] = None
+    # EP-09 (additive): statement-level verification and what was removed.
+    claims: list[ClaimCheck] = []
+    removed_claims: int = 0
+    injection_detected: bool = False
+    # EP-06 (additive): set when the question compares two or more documents.
+    comparison: Optional[Comparison] = None

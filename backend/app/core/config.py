@@ -84,6 +84,23 @@ class Settings(BaseConfig):
     QA_MAX_DISTANCE: float = float(os.getenv("QA_MAX_DISTANCE", "0.65"))
     # FR-046: answers backed by fewer sources, or only weak matches, are flagged as uncertain.
     QA_UNCERTAIN_MIN_SOURCES: int = int(os.getenv("QA_UNCERTAIN_MIN_SOURCES", "2"))
+    # Hallucination defence (EP-09)
+    # FR-048: answer only with >= QA_MIN_EVIDENCE_CHUNKS relevant passages, or one strong passage.
+    QA_MIN_EVIDENCE_CHUNKS: int = int(os.getenv("QA_MIN_EVIDENCE_CHUNKS", "2"))
+    QA_STRONG_EVIDENCE_DISTANCE: float = float(os.getenv("QA_STRONG_EVIDENCE_DISTANCE", "0.5"))
+    # FR-049: a statement is supported when its best match in the cited passage reaches this score.
+    # Multi-document reasoning (EP-06)
+    QA_MULTIDOC_FETCH: int = int(os.getenv("QA_MULTIDOC_FETCH", "30"))
+    QA_MULTIDOC_PER_DOC: int = int(os.getenv("QA_MULTIDOC_PER_DOC", "3"))
+    QA_MULTIDOC_MAX_DOCS: int = int(os.getenv("QA_MULTIDOC_MAX_DOCS", "4"))
+    # Calibrated with nomic-embed-text: reworded same fact 0.86, conflicting number 0.96,
+    # opposite rule 0.72, same topic but different point 0.62, different topic 0.44.
+    QA_SAME_TOPIC_SIMILARITY: float = float(os.getenv("QA_SAME_TOPIC_SIMILARITY", "0.68"))
+    QA_AGREE_SIMILARITY: float = float(os.getenv("QA_AGREE_SIMILARITY", "0.83"))
+    QA_VERIFY_CLAIMS: bool = os.getenv("QA_VERIFY_CLAIMS", "True").lower() in ("true", "1")
+    # Calibrated with nomic-embed-text: faithful paraphrases 0.88-0.90; plausible-but-unsupported
+    # 0.71, wrong source 0.57, unrelated 0.54.
+    QA_CLAIM_MIN_SUPPORT: float = float(os.getenv("QA_CLAIM_MIN_SUPPORT", "0.78"))
     # Calibrated on nomic-embed-text: correct single-passage answers scored 0.64-0.72 similarity.
     QA_UNCERTAIN_MAX_DISTANCE: float = float(os.getenv("QA_UNCERTAIN_MAX_DISTANCE", "0.5"))
 

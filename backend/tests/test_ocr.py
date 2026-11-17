@@ -472,3 +472,91 @@ def test_missing_florence_is_downloaded_once():
     calls: list[bool] = []
     load_florence(_fake_loader(calls, False), _fake_loader(calls, False), SimpleNamespace(float32="f32"))
     assert calls == [True, False, False]  # cache miss, then one online load of each part
+
+
+# --- AL-283: fallback OCR engine ------------------------------------------------------------
+class _ScoredEngine:
+    """Fake model returning a fixed confidence (and optionally empty text)."""
+
+    def __init__(self, name, confidence=0.9, text=None, fail=False):
+        self.name, self.confidence, self.text, self.fail = name, confidence, text, fail
+        self.calls = 0
+
+    def recognize(self, images):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("model crashed")
+        return [(self.text if self.text is not None else f"{self.name}:{img.size[0]}", self.confidence)
+                for img in images]
+
+
+def test_fallback_reads_every_image_when_the_primary_cannot_load():
+    def broken():
+        raise OSError("model files missing")
+
+    fallback = _ScoredEngine("rapidocr")
+    service = engines.OCRService(broken, fallback_factory=lambda: fallback)
+    results = service.recognize([_png(100), _png(140)], timeout_seconds=10)
+    assert [(r.text, r.engine, r.error) for r in results] == [("rapidocr:100", "rapidocr", None),
+                                                              ("rapidocr:140", "rapidocr", None)]
+    status = service.status()
+    assert "model files missing" in status["load_error"] and status["fallback_engine"] == "rapidocr"
+
+
+def test_forced_primary_failure_uses_the_fallback():
+    """'Done when' of AL-283: the fallback path, tested with a forced failure."""
+    primary, fallback = _ScoredEngine("florence", fail=True), _ScoredEngine("rapidocr")
+    results = engines.OCRService(lambda: primary, fallback_factory=lambda: fallback).recognize(
+        [_png(100), _png(140)], timeout_seconds=10)
+    assert [r.engine for r in results] == ["rapidocr", "rapidocr"] and all(r.error is None for r in results)
+    assert primary.calls == 3  # batch, then each image alone, before falling back
+
+
+def test_only_the_failed_image_goes_to_the_fallback():
+    fallback = _ScoredEngine("rapidocr")
+    service = engines.OCRService(lambda: _Engine("florence", bad_width=140), fallback_factory=lambda: fallback)
+    results = service.recognize([_png(100), _png(140), _png(180)], timeout_seconds=10)
+    assert [r.engine for r in results] == ["florence", "rapidocr", "florence"]
+    assert fallback.calls == 1
+
+
+@pytest.mark.parametrize("primary,fallback,winner", [
+    (_ScoredEngine("florence", confidence=0.2), _ScoredEngine("rapidocr", confidence=0.95), "rapidocr"),
+    (_ScoredEngine("florence", confidence=0.2), _ScoredEngine("rapidocr", confidence=0.1), "florence"),
+    (_ScoredEngine("florence", text=""), _ScoredEngine("rapidocr", confidence=0.3), "rapidocr"),
+    (_ScoredEngine("florence", confidence=0.9), _ScoredEngine("rapidocr", confidence=0.99), "florence"),
+])
+def test_low_confidence_or_empty_reads_keep_the_better_result(primary, fallback, winner):
+    service = engines.OCRService(lambda: primary, fallback_factory=lambda: fallback)
+    assert service.recognize([_png()], timeout_seconds=10)[0].engine == winner
+    assert fallback.calls == (0 if winner == "florence" and primary.confidence >= 0.5 else 1)
+
+
+def test_both_engines_failing_reports_the_error():
+    service = engines.OCRService(lambda: _ScoredEngine("florence", fail=True),
+                                 fallback_factory=lambda: _ScoredEngine("rapidocr", fail=True))
+    result = service.recognize([_png()], timeout_seconds=10)[0]
+    assert result.error == "OCR failed: RuntimeError" and result.text == ""
+
+
+def test_no_fallback_after_the_document_deadline():
+    fallback = _ScoredEngine("rapidocr")
+    service = engines.OCRService(lambda: _ScoredEngine("florence", fail=True), fallback_factory=lambda: fallback)
+    assert service.recognize([_png()], timeout_seconds=0)[0].error == "OCR timed out"
+    assert fallback.calls == 0
+
+
+def test_rapidocr_boxes_are_put_in_reading_order():
+    def box(x, y, text):
+        return [[[x, y], [x + 50, y], [x + 50, y + 20], [x, y + 20]], text, 0.9]
+
+    shuffled = [box(120, 2, "grew"), box(0, 0, "Quarterly"), box(60, 1, "revenue"), box(0, 40, "twelve"),
+                box(70, 41, "percent")]
+    ordered = engines.RapidOCREngine.reading_order(shuffled)
+    assert [b[1] for b in ordered] == ["Quarterly", "revenue", "grew", "twelve", "percent"]
+
+
+def test_default_service_uses_florence_with_rapidocr_fallback():
+    service = engines.OCRService()
+    assert service._primary.factory is engines.Florence2Engine
+    assert service._fallback.factory is engines.RapidOCREngine

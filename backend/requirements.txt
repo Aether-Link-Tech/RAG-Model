@@ -39,6 +39,8 @@ pymupdf
 chardet
 
 # OCR
+rapidocr_onnxruntime==1.4.4  # AL-283 fallback OCR (PaddleOCR models in ONNX, bundled)
+opencv-python-headless==4.10.0.84
 pillow
 easyocr
 

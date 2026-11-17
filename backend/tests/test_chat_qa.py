@@ -425,3 +425,119 @@ async def test_poisoned_document_is_answered_without_obeying_it(async_client, te
     prompt_text = qa_env[-1][1]["content"]
     assert "Ignore all previous" not in prompt_text and "hunter2" not in prompt_text
     assert "24 hours" in prompt_text
+
+
+# ================================================================ EP-06 multi-document reasoning
+from backend.app.services import multi_doc  # noqa: E402
+
+
+def _pd(doc: str, i: int, text_: str, distance: float = 0.2) -> Passage:
+    return Passage(chunk_id=f"{doc}:{i}", document_id=doc, document_name=f"{doc}.txt", text=text_, distance=distance)
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("Compare the leave policy in both handbooks", True),
+    ("What is the difference between the 2025 and 2026 policy?", True),
+    ("Do the two documents agree on remote work?", True),
+    ("HR handbook versus IT policy on passwords", True),
+    ("How many vacation days do I get?", False),
+])
+def test_comparison_intent(question, expected):
+    assert multi_doc.is_comparison(question) is expected
+
+
+def test_top_passages_per_document():
+    passages = [_pd("a", i, f"a{i}", 0.1 + i / 100) for i in range(5)] + \
+               [_pd("b", i, f"b{i}", 0.3 + i / 100) for i in range(5)]
+    chosen = multi_doc.per_document(passages, per_doc=3, max_docs=4)
+    assert [p.chunk_id for p in chosen] == ["a:0", "a:1", "a:2", "b:0", "b:1", "b:2"]
+
+
+@pytest.mark.parametrize("a,b,expected", [
+    ("Full-time staff receive 22 days of leave.", "Full-time staff receive 25 days of leave.", "contradict"),
+    ("Remote work is allowed two days per week.", "Remote work is not allowed.", "contradict"),
+    ("Staff receive 22 days of leave.", "Staff receive 22 days of leave.", "agree"),
+])
+def test_relation_rules(a, b, expected):
+    sim = 1.0 if a == b else 0.8
+    assert multi_doc.classify(a, b, sim) == expected
+
+
+@pytest.mark.asyncio
+async def test_conflicting_documents_are_reported_with_quotes():
+    passages = [_pd("handbook-2025", 0, "Full-time staff receive 22 days of paid annual leave."),
+                _pd("handbook-2026", 0, "Full-time staff receive 25 days of paid annual leave.")]
+    comparison = await multi_doc.compare(passages)
+    assert comparison.relation == "contradict"
+    pair = comparison.pairs[0]
+    assert {pair.document_a, pair.document_b} == {"handbook-2025.txt", "handbook-2026.txt"}
+    assert "22 days" in pair.quote_a + pair.quote_b and "25 days" in pair.quote_a + pair.quote_b
+
+
+@pytest.mark.asyncio
+async def test_single_document_has_nothing_to_compare():
+    assert (await multi_doc.compare([_pd("a", 0, "Staff receive 22 days of leave.")])).relation == "unrelated"
+
+
+def test_comparison_prompt_groups_passages_by_document():
+    msgs = grounded_prompt.build_messages("compare", [_pd("x", 0, "One."), _pd("y", 0, "Two."), _pd("x", 1, "Three.")],
+                                          comparison=True)
+    assert "agree" in msgs[0]["content"] and "Document A" in msgs[0]["content"]
+    user = msgs[1]["content"]
+    assert "[1] Document A: x.txt" in user and "[2] Document B: y.txt" in user and "[3] Document A: x.txt" in user
+
+
+async def test_compare_question_uses_both_documents_and_reports_conflict(async_client, test_user, qa_env):
+    await _upload(async_client, test_user, b"Leave policy 2025. Full-time staff receive 22 days of paid annual leave.",
+                  "handbook-2025.txt")
+    await _upload(async_client, test_user, b"Leave policy 2026. Full-time staff receive 25 days of paid annual leave.",
+                  "handbook-2026.txt")
+    r = await _ask(async_client, test_user, "Compare the paid annual leave for full-time staff in both handbooks")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    prompt_text = qa_env[-1][1]["content"]
+    assert "Document A" in prompt_text and "Document B" in prompt_text
+    assert body["comparison"]["relation"] == "contradict"
+    assert set(body["comparison"]["documents"]) == {"handbook-2025.txt", "handbook-2026.txt"}
+    assert "user_id" not in json.dumps(body)
+
+
+@pytest.mark.asyncio
+async def test_statement_combining_facts_of_one_passage_is_supported_and_cited():
+    passage = _pd("h", 0, "Leave policy. Full-time staff receive 25 days of paid annual leave. "
+                          "Remote work is not permitted for any staff.")
+    v = await answer_verification.verify(
+        "Document A states that full-time staff receive 25 days of paid annual leave and that remote work "
+        "is not permitted for any staff.", [passage])
+    assert v.claims[0].supported and v.answer.endswith("[1]")
+
+
+@pytest.mark.asyncio
+async def test_statement_with_opposite_polarity_is_rejected():
+    passages = [_pd("h", 0, "Remote work is not permitted for any staff."), _pd("k", 0, "Leave is 22 days.")]
+    v = await answer_verification.verify("Remote work is permitted for staff [1]. Leave is 22 days [2].", passages)
+    assert not v.claims[0].supported and "contradicts" in v.claims[0].reason
+    assert "permitted" not in v.answer and "22 days" in v.answer
+
+
+def test_document_letters_are_replaced_by_names():
+    passages = [_pd("h2026", 0, "x"), _pd("h2025", 0, "y")]
+    assert qa._name_documents("Document A says x, Document B says y.", passages) == "h2026.txt says x, h2025.txt says y."
+
+
+@pytest.mark.asyncio
+async def test_quantity_limits_are_not_treated_as_negation():
+    v = await answer_verification.verify("Incidents must be reported within 24 hours [1].",
+                                         [_pd("h", 0, "Incidents must be reported no later than 24 hours after discovery.")])
+    assert v.claims[0].supported
+
+
+def test_false_agreement_is_removed_only_when_documents_contradict():
+    contra = multi_doc.Comparison("contradict", ["a.txt", "b.txt"])
+    text_ = ("a.txt allows remote work [1]. a.txt and b.txt agree that remote work is permitted [1]. "
+             "b.txt forbids it, while a.txt allows it [2].")
+    cleaned, dropped = multi_doc.drop_false_agreement(text_, contra)
+    assert dropped == ["a.txt and b.txt agree that remote work is permitted [1]."]
+    assert "agree" not in cleaned and "while a.txt allows it" in cleaned
+    same = multi_doc.Comparison("agree", ["a.txt", "b.txt"])
+    assert multi_doc.drop_false_agreement(text_, same) == (text_, [])

@@ -33,12 +33,14 @@ logger = logging.getLogger(__name__)
 _MARKER = re.compile(r"\s*\[(\d{1,3})\]")
 _SENTENCE = re.compile(r"[^.!?\n]+(?:[.!?]+|$)(?:\s*\[\d{1,3}\])*", re.MULTILINE)
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+_NEGATION = re.compile(r"\b(not|no|never|cannot|can't|prohibited|forbidden|banned|disallowed)\b", re.IGNORECASE)
 _WORD = re.compile(r"[a-zA-Z][a-zA-Z'-]{2,}")
 _STOP = frozenset("""
 the and for are but not you all any can her was one our out has have had his how its may new now
 see who did does this that with from they them their there then than what when where which while will
 would should could must also into onto upon about above below more most such only own same very just
 been being were your yours each every some other these those shall within without per via
+document documents states stated state says said specifies specify mentions mention according whereas both
 """.split())
 
 
@@ -64,10 +66,17 @@ class Verification:
         return any(c.supported for c in self.claims)
 
 
+def split_sentences(text: str) -> list[str]:
+    """Split at . ! ? followed by whitespace (keeps '2026.txt' and '2.5' intact), and at newlines.
+    A trailing [n] marker after the full stop stays with its sentence."""
+    text = re.sub(r"([.!?])\s*((?:\[\d{1,3}\])+)", r" \2\1", text).replace("  ", " ")  # "x. [1]" -> "x [1]."
+    return [s for s in re.split(r"(?<=[.!?])\s+|\n+", text) if s.strip()]
+
+
 def split_claims(answer: str) -> list[tuple[str, list[int], str]]:
     """(claim text without markers, markers, original sentence incl. markers)."""
     out = []
-    for raw in _SENTENCE.findall(answer):
+    for raw in split_sentences(answer):
         sentence = raw.strip()
         if not sentence:
             continue
@@ -76,6 +85,14 @@ def split_claims(answer: str) -> list[tuple[str, list[int], str]]:
         if text:
             out.append((text, markers, sentence))
     return out
+
+
+# Quantity limits ("no later than 24 hours", "not more than 5") are not negations of the statement.
+_LIMIT_PHRASE = re.compile(r"\b(no|not) (later|more|less|fewer|earlier|sooner|longer) than\b|\bnot exceed\b|\bno less than\b", re.IGNORECASE)
+
+
+def _negated(text: str) -> bool:
+    return bool(_NEGATION.search(_LIMIT_PHRASE.sub(" ", text)))
 
 
 def _content_words(text: str) -> set[str]:
@@ -129,20 +146,40 @@ async def verify(answer: str, passages: Sequence[Passage]) -> Verification:
         # Cited passages first; an uncited claim may still be linked to any given passage (FR-044).
         scope = [m - 1 for m in valid] or list(range(n))
         best_score, best_idx = 0.0, None
+        closest_sim = -1.0
+        topic_polarities: set[bool] = set()  # negated? for each source sentence on the same topic
         for ei, (pi, ev_text) in enumerate(evidence):
             if pi not in scope:
                 continue
             sim = _cosine(claim_vecs[ci], evid_vecs[ei]) if claim_vecs else 0.0
-            overlap = len(words & _content_words(ev_text)) / max(1, len(words))
+            ev_words = _content_words(ev_text)
+            overlap = len(words & ev_words) / max(1, len(words))
+            closest_sim = max(closest_sim, sim)
+            # Same topic: close in meaning, or most of the source sentence's words are in the claim.
+            if sim >= settings.QA_SAME_TOPIC_SIMILARITY or len(words & ev_words) / max(1, len(ev_words)) >= 0.6:
+                topic_polarities.add(_negated(ev_text))
             score = max(sim, overlap)
             if score > best_score:
                 best_score, best_idx = score, pi
+        # Word overlap ignores "not": a statement is rejected when every source sentence on its
+        # topic has the opposite polarity (e.g. "is permitted" vs "is not permitted"), unless its
+        # meaning is a near-exact match.
+        claim_negated = _negated(text)
+        polarity_ok = not topic_polarities or claim_negated in topic_polarities
+        # A statement that combines facts from several sentences of one passage is judged against
+        # the whole passage (only when its polarity agrees with the source).
+        for pi in scope:
+            whole = len(words & _content_words(passages[pi].text)) / max(1, len(words))
+            if polarity_ok and whole > best_score:
+                best_score, best_idx = whole, pi
         scope_text = " ".join(passages[i].text for i in scope)
         numbers_ok = nums <= _numbers(scope_text)
-        supported = numbers_ok and best_score >= settings.QA_CLAIM_MIN_SUPPORT
+        supported = numbers_ok and polarity_ok and best_score >= settings.QA_CLAIM_MIN_SUPPORT
         reason = None
         if not numbers_ok:
             reason = "A number in this statement does not appear in the cited source."
+        elif not polarity_ok:
+            reason = "This statement contradicts the cited source."
         elif not supported:
             reason = "This statement is not supported by the cited source."
         elif not valid:
@@ -151,10 +188,13 @@ async def verify(answer: str, passages: Sequence[Passage]) -> Verification:
         checks.append(ClaimCheck(text, valid or ([best_idx + 1] if supported and best_idx is not None else []),
                                  supported, round(best_score, 3), chunk if supported else None, reason))
         if supported:
+            if not valid and best_idx is not None:  # FR-044: show the linked source in the text
+                sentence = f"{sentence.rstrip()} [{best_idx + 1}]"
             kept_sentences.append(sentence)
 
     removed = sum(1 for c in checks if not c.supported)
-    if removed and kept_sentences:
+    linked = any(not c.reason or c.reason.startswith("Uncited") for c in checks if c.supported and c.reason)
+    if (removed or linked) and kept_sentences:
         cleaned = " ".join(kept_sentences)
     else:
         cleaned = answer

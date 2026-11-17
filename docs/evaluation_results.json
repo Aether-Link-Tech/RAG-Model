@@ -1,0 +1,1331 @@
+{
+  "generated": "2026-11-17 04:31",
+  "llm": "qwen2.5:3b",
+  "embedding": "nomic-embed-text",
+  "performance": {
+    "chunks": 12,
+    "processing_mean_s": 0.4438018437499996,
+    "processing_max_s": 3.7211954329999983
+  },
+  "retrieval": {
+    "questions": 53,
+    "P@5": 0.1999999999999999,
+    "P@10": 0.09999999999999995,
+    "R@5": 1.0,
+    "MRR": 0.9440251572327044,
+    "Hit@1": 0.9056603773584906,
+    "avg_relevant_chunks": 1.0,
+    "retrieval_p50_s": 0.04450807300000292,
+    "retrieval_p95_s": 0.05732971399999798
+  },
+  "context_aware": {
+    "mode": "context-aware",
+    "accuracy": 0.9433962264150944,
+    "citation_accuracy": 0.9622641509433962,
+    "false_refusals": 0.018867924528301886,
+    "unsupported_statements_in_answers": 0,
+    "answers_with_unsupported": 0.0,
+    "correct_refusal_unanswerable": 1.0,
+    "hallucinated_unanswerable": 0.0,
+    "answer_p50_s": 2.8264120439999942,
+    "answer_p95_s": 6.711065269999992,
+    "failures": 0,
+    "failure_rate": 0.0,
+    "rows": [
+      {
+        "question": "How long must a password be?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 14.24,
+        "answer": "Passwords must be at least 14 characters long [1].",
+        "error": null
+      },
+      {
+        "question": "How often do I have to change my password?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.73,
+        "answer": "You have to change your password every 180 days. [1]",
+        "error": null
+      },
+      {
+        "question": "How many previous passwords can't be reused?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.25,
+        "answer": "The last 5 passwords cannot be reused. [1]",
+        "error": null
+      },
+      {
+        "question": "What happens after too many failed sign-in attempts?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.24,
+        "answer": "After too many failed sign-in attempts, the account is locked for 15 minutes. [1]",
+        "error": null
+      },
+      {
+        "question": "Which authenticator app is approved?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.71,
+        "answer": "The approved authenticator app is Microsoft Authenticator [2].",
+        "error": null
+      },
+      {
+        "question": "Where can I reset a lost password?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 4.57,
+        "answer": "At the IT Service Desk with a valid university ID card. [1]",
+        "error": null
+      },
+      {
+        "question": "How many days a week can I work from home?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 4.57,
+        "answer": "Staff may work remotely up to two days per week with their line manager's written approval. [1]",
+        "error": null
+      },
+      {
+        "question": "Can new employees work remotely?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.94,
+        "answer": "According to Remote Work Policy.txt: \"Remote work is not available during the first three months of employment\" [1].",
+        "error": null
+      },
+      {
+        "question": "What is the name of the university VPN?",
+        "correct": false,
+        "cited_correct": false,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 4.96,
+        "answer": "According to Network and WiFi Access.txt: \"Staff and students connect to the Wi-Fi network named FIU-Secure using their university account\" [1].",
+        "error": null
+      },
+      {
+        "question": "What are the core hours for remote staff?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.07,
+        "answer": "The core hours for remote staff are 10:00 to 15:00. [1]",
+        "error": null
+      },
+      {
+        "question": "How far in advance must I ask HR to work from abroad?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.15,
+        "answer": "HR requires at least 10 working days' advance notice for remote work from outside the country [1].",
+        "error": null
+      },
+      {
+        "question": "How many paid leave days do full-time staff get?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 3.04,
+        "answer": "Full-time staff receive 24 days of paid annual leave per calendar year. [1]",
+        "error": null
+      },
+      {
+        "question": "How many unused leave days can I carry over?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.55,
+        "answer": "Up to 5 unused leave days can be carried over to the next year. [1]",
+        "error": null
+      },
+      {
+        "question": "By when must carried-over leave be used?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.35,
+        "answer": "Up to 5 unused leave days can be carried over to the next year and must be used by 31 March. [1]",
+        "error": null
+      },
+      {
+        "question": "When do I need a medical report for sick leave?",
+        "correct": false,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.79,
+        "answer": "Staff must inform their line manager before 09:30 on the first day of sickness [1].",
+        "error": null
+      },
+      {
+        "question": "By what time must I tell my manager that I am sick?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.59,
+        "answer": "Staff must inform their line manager before 09:30 on the first day of sickness. [1]",
+        "error": null
+      },
+      {
+        "question": "How quickly must a data incident be reported?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 3.45,
+        "answer": "A data incident must be reported to the IT Security Office within 24 hours of discovery [1].",
+        "error": null
+      },
+      {
+        "question": "What email address do I use to report a security incident?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.97,
+        "answer": "[1] The email address to report a security incident is security@fiu.example.",
+        "error": null
+      },
+      {
+        "question": "Should I switch off a compromised computer?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 7.57,
+        "answer": "According to the Data Incident Response Procedure in <context>[3], affected devices must be disconnected from the network but must not be switched off, so evidence is preserved.",
+        "error": null
+      },
+      {
+        "question": "Within how many hours is the national authority notified about a personal data breach?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.1,
+        "answer": "According to Data Incident Response.txt: \"If personal data is affected, the Data Protection Officer notifies the national authority within 72 hours\" [1].",
+        "error": null
+      },
+      {
+        "question": "Who reviews the written incident report?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.51,
+        "answer": "The Information Security Committee reviews the written incident report. [1]",
+        "error": null
+      },
+      {
+        "question": "Which class are short flights booked in?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 3.8,
+        "answer": "Flights shorter than 6 hours are booked in economy class. [1]",
+        "error": null
+      },
+      {
+        "question": "What is the hotel limit in capital cities?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 3.73,
+        "answer": "[1] The hotel limit is 150 euros per night in capital cities.",
+        "error": null
+      },
+      {
+        "question": "What is the daily meal allowance on business trips?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.02,
+        "answer": "The daily meal allowance on business trips is 45 euros. [1]",
+        "error": null
+      },
+      {
+        "question": "How long do I have to submit an expense claim?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.26,
+        "answer": "You have to submit an expense claim within 30 days after the trip [1].",
+        "error": null
+      },
+      {
+        "question": "Is alcohol reimbursed?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 4.12,
+        "answer": "According to Travel and Expenses Policy.txt: \"Alcohol is never reimbursed\" [1].",
+        "error": null
+      },
+      {
+        "question": "How often are staff laptops replaced?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 3.79,
+        "answer": "Every staff member receives one university laptop, which is replaced every 4 years. [1]",
+        "error": null
+      },
+      {
+        "question": "How quickly must a stolen laptop be reported?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.79,
+        "answer": "A lost or stolen laptop must be reported to the IT Service Desk within 2 hours [1].",
+        "error": null
+      },
+      {
+        "question": "Can I install games on my work laptop?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.91,
+        "answer": "According to Laptop and Equipment Policy.txt: \"Limited personal use of university laptops is allowed, but installing games is not permitted\" [2].",
+        "error": null
+      },
+      {
+        "question": "What encryption is used on university laptops?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 4.17,
+        "answer": "BitLocker is used on university laptops [1].",
+        "error": null
+      },
+      {
+        "question": "What is the mailbox storage limit?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 3.44,
+        "answer": "The mailbox storage limit is 50 gigabytes. [1]",
+        "error": null
+      },
+      {
+        "question": "What is the maximum email attachment size?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.41,
+        "answer": "The maximum email attachment size is 25 megabytes. [1]",
+        "error": null
+      },
+      {
+        "question": "How long do deleted emails stay in the recycle bin?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.83,
+        "answer": "Deleted emails stay in the recycle bin for 30 days before permanent deletion. [1]",
+        "error": null
+      },
+      {
+        "question": "Can I forward my university email to my personal account automatically?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.87,
+        "answer": "According to Email and Messaging Policy.txt: \"Automatic forwarding of university email to personal accounts is prohibited\" [1].",
+        "error": null
+      },
+      {
+        "question": "Which Wi-Fi network do staff use?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 3.41,
+        "answer": "[1] Network and Wi-Fi Access.txt states that staff connect to the Wi-Fi network named FIU-Secure using their university account.",
+        "error": null
+      },
+      {
+        "question": "How long is a guest Wi-Fi voucher valid?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.27,
+        "answer": "[1] Guest vouchers are valid for 24 hours.",
+        "error": null
+      },
+      {
+        "question": "How many devices can use one guest voucher?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 0.96,
+        "answer": "One guest voucher allows two devices. [1]",
+        "error": null
+      },
+      {
+        "question": "Can I connect my own router to the network?",
+        "correct": false,
+        "cited_correct": false,
+        "refused": true,
+        "unsupported_left": 0,
+        "seconds": 0.72,
+        "answer": "The uploaded documents do not contain enough information to answer this question.",
+        "error": null
+      },
+      {
+        "question": "Where can staff install software from?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.4,
+        "answer": "Staff may install software only from the Company Portal app catalogue. [1]",
+        "error": null
+      },
+      {
+        "question": "How long does a new software request review take?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 3.96,
+        "answer": "[1] New software requests are reviewed by the IT Security Officer within 5 working days.",
+        "error": null
+      },
+      {
+        "question": "How long can free trial software be used?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.79,
+        "answer": "Free trial software may be used for at most 14 days before a licence is purchased. [1]",
+        "error": null
+      },
+      {
+        "question": "Is cryptocurrency mining software allowed?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 0.69,
+        "answer": "According to Software Installation Policy.txt: \"Peer-to-peer file sharing programs and cryptocurrency mining software are prohibited on all university devices\" [1].",
+        "error": null
+      },
+      {
+        "question": "When are university servers backed up?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.67,
+        "answer": "University servers are backed up every night at 01:00. [1]",
+        "error": null
+      },
+      {
+        "question": "How long are server backups kept?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.2,
+        "answer": "Backups are kept for 90 days. [1]",
+        "error": null
+      },
+      {
+        "question": "How long are financial records archived?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.17,
+        "answer": "Financial records are archived for 10 years. [1]",
+        "error": null
+      },
+      {
+        "question": "How long does OneDrive keep previous versions?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.25,
+        "answer": "OneDrive keeps previous versions for 60 days. [1]",
+        "error": null
+      },
+      {
+        "question": "Do visitors need to be accompanied in server rooms?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.43,
+        "answer": "[1] Visitors must be accompanied by a staff member in the server rooms.",
+        "error": null
+      },
+      {
+        "question": "When do staff access cards open the building?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.95,
+        "answer": "Staff access cards open the main building between 07:00 and 22:00 on weekdays. [1]",
+        "error": null
+      },
+      {
+        "question": "How much does a replacement access card cost?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 1.14,
+        "answer": "A replacement access card costs 20 euros. [1]",
+        "error": null
+      },
+      {
+        "question": "Within how long must new staff finish the security awareness course?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.76,
+        "answer": "New staff must complete the information security awareness course within their first 2 weeks. [1]",
+        "error": null
+      },
+      {
+        "question": "What score is needed to pass the security quiz?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.71,
+        "answer": "[2] Training and Onboarding.txt states that the security awareness course ends with a quiz that requires a score of 80 percent.",
+        "error": null
+      },
+      {
+        "question": "How often must the data protection course be repeated?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.75,
+        "answer": "The data protection course must be repeated every 2 years [1].",
+        "error": null
+      },
+      {
+        "question": "When are accounts for new staff created?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.88,
+        "answer": "[1] University accounts for new staff are created 3 working days before their start date.",
+        "error": null
+      }
+    ],
+    "unanswerable": [
+      {
+        "question": "What is the university's policy on electric company cars?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "How much does the cafeteria charge for lunch?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "Who won the university football tournament last year?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "What is the salary of a senior lecturer?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "How many parking spaces does the campus have?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "What is the dress code for graduation ceremonies?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "Which programming language is taught in the first semester?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "When does the library close on Sundays?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      }
+    ]
+  },
+  "standard": {
+    "mode": "standard",
+    "accuracy": 0.9056603773584906,
+    "citation_accuracy": 0.8301886792452831,
+    "false_refusals": 0.09433962264150944,
+    "unsupported_statements_in_answers": 0,
+    "answers_with_unsupported": 0.0,
+    "correct_refusal_unanswerable": 1.0,
+    "hallucinated_unanswerable": 0.0,
+    "answer_p50_s": 6.357263082000031,
+    "answer_p95_s": 8.524963371000013,
+    "failures": 0,
+    "failure_rate": 0.0,
+    "rows": [
+      {
+        "question": "How long must a password be?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 4.99,
+        "answer": "Password must be at least 14 characters long [1].",
+        "error": null
+      },
+      {
+        "question": "How often do I have to change my password?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 4.09,
+        "answer": "Passwords must be changed every 180 days. [1]",
+        "error": null
+      },
+      {
+        "question": "How many previous passwords can't be reused?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 4.65,
+        "answer": "The last 5 passwords cannot be reused. [1]",
+        "error": null
+      },
+      {
+        "question": "What happens after too many failed sign-in attempts?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.61,
+        "answer": "After too many failed sign-in attempts, the account is locked for 15 minutes. [1]",
+        "error": null
+      },
+      {
+        "question": "Which authenticator app is approved?",
+        "correct": true,
+        "cited_correct": false,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.44,
+        "answer": "The approved authenticator app is Microsoft Authenticator. [3]",
+        "error": null
+      },
+      {
+        "question": "Where can I reset a lost password?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.79,
+        "answer": "You can reset a lost password at the IT Service Desk with a valid university ID card. [1]",
+        "error": null
+      },
+      {
+        "question": "How many days a week can I work from home?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.65,
+        "answer": "Staff may work remotely up to two days per week with their line manager's written approval. [1]",
+        "error": null
+      },
+      {
+        "question": "Can new employees work remotely?",
+        "correct": false,
+        "cited_correct": false,
+        "refused": true,
+        "unsupported_left": 0,
+        "seconds": 5.37,
+        "answer": "The uploaded documents do not contain enough information to answer this question.",
+        "error": null
+      },
+      {
+        "question": "What is the name of the university VPN?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.41,
+        "answer": "The name of the university VPN is FIU-Connect. [5]",
+        "error": null
+      },
+      {
+        "question": "What are the core hours for remote staff?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.43,
+        "answer": "The core hours for remote staff are 10:00 to 15:00. [1]",
+        "error": null
+      },
+      {
+        "question": "How far in advance must I ask HR to work from abroad?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.86,
+        "answer": "[1][3] You must ask HR at least 10 working days in advance for approval to work from outside the country.",
+        "error": null
+      },
+      {
+        "question": "How many paid leave days do full-time staff get?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 8.52,
+        "answer": "Full-time staff receive 24 days of paid annual leave per calendar year. [1]",
+        "error": null
+      },
+      {
+        "question": "How many unused leave days can I carry over?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 9.06,
+        "answer": "Up to 5 unused leave days can be carried over to the next year and must be used by 31 March. [1]",
+        "error": null
+      },
+      {
+        "question": "By when must carried-over leave be used?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 7.49,
+        "answer": "Up to 5 unused leave days can be carried over to the next year and must be used by 31 March. [1]",
+        "error": null
+      },
+      {
+        "question": "When do I need a medical report for sick leave?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 9.81,
+        "answer": "Staff must inform their line manager before 09:30 on the first day of sickness [1]. If sick leave of more than 3 consecutive days is required, a medical report is also needed [1].",
+        "error": null
+      },
+      {
+        "question": "By what time must I tell my manager that I am sick?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 7.79,
+        "answer": "Staff must inform their line manager before 09:30 on the first day of sickness. [1]",
+        "error": null
+      },
+      {
+        "question": "How quickly must a data incident be reported?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.95,
+        "answer": "Data incidents must be reported to the IT Security Office within 24 hours of discovery [1].",
+        "error": null
+      },
+      {
+        "question": "What email address do I use to report a security incident?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 7.83,
+        "answer": "You should report a security incident by email to security@fiu.example or by calling extension 4400. [1]",
+        "error": null
+      },
+      {
+        "question": "Should I switch off a compromised computer?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 8.11,
+        "answer": "No, affected devices must not be switched off according to the Data Incident Response Procedure in <context>[3].",
+        "error": null
+      },
+      {
+        "question": "Within how many hours is the national authority notified about a personal data breach?",
+        "correct": false,
+        "cited_correct": false,
+        "refused": true,
+        "unsupported_left": 0,
+        "seconds": 3.5,
+        "answer": "The uploaded documents do not contain enough information to answer this question.",
+        "error": null
+      },
+      {
+        "question": "Who reviews the written incident report?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.98,
+        "answer": "The written incident report is reviewed by the Information Security Committee. [1]",
+        "error": null
+      },
+      {
+        "question": "Which class are short flights booked in?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.45,
+        "answer": "Flights shorter than 6 hours are booked in economy class [1].",
+        "error": null
+      },
+      {
+        "question": "What is the hotel limit in capital cities?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.59,
+        "answer": "The hotel limit in capital cities is 150 euros per night. [1]",
+        "error": null
+      },
+      {
+        "question": "What is the daily meal allowance on business trips?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.36,
+        "answer": "The daily meal allowance on business trips is 45 euros. [1]",
+        "error": null
+      },
+      {
+        "question": "How long do I have to submit an expense claim?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.79,
+        "answer": "You have to submit an expense claim within 30 days after the trip. [1]",
+        "error": null
+      },
+      {
+        "question": "Is alcohol reimbursed?",
+        "correct": false,
+        "cited_correct": false,
+        "refused": true,
+        "unsupported_left": 0,
+        "seconds": 4.5,
+        "answer": "The uploaded documents do not contain enough information to answer this question.",
+        "error": null
+      },
+      {
+        "question": "How often are staff laptops replaced?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.46,
+        "answer": "Every 4 years [1]",
+        "error": null
+      },
+      {
+        "question": "How quickly must a stolen laptop be reported?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.59,
+        "answer": "A lost or stolen laptop must be reported to the IT Service Desk within 2 hours [1].",
+        "error": null
+      },
+      {
+        "question": "Can I install games on my work laptop?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.07,
+        "answer": "No, installing games is not permitted on university laptops. [2]",
+        "error": null
+      },
+      {
+        "question": "What encryption is used on university laptops?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.24,
+        "answer": "BitLocker is used on university laptops. [1]",
+        "error": null
+      },
+      {
+        "question": "What is the mailbox storage limit?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.6,
+        "answer": "The mailbox storage limit is 50 gigabytes. [1]",
+        "error": null
+      },
+      {
+        "question": "What is the maximum email attachment size?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.67,
+        "answer": "The maximum email attachment size is 25 megabytes. [1]",
+        "error": null
+      },
+      {
+        "question": "How long do deleted emails stay in the recycle bin?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.83,
+        "answer": "Deleted emails stay in the recycle bin for 30 days before permanent deletion. [1]",
+        "error": null
+      },
+      {
+        "question": "Can I forward my university email to my personal account automatically?",
+        "correct": false,
+        "cited_correct": false,
+        "refused": true,
+        "unsupported_left": 0,
+        "seconds": 6.03,
+        "answer": "The uploaded documents do not contain enough information to answer this question.",
+        "error": null
+      },
+      {
+        "question": "Which Wi-Fi network do staff use?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.6,
+        "answer": "Staff use the Wi-Fi network named FIU-Secure. [1]",
+        "error": null
+      },
+      {
+        "question": "How long is a guest Wi-Fi voucher valid?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.83,
+        "answer": "A guest Wi-Fi voucher is valid for 24 hours. [1]",
+        "error": null
+      },
+      {
+        "question": "How many devices can use one guest voucher?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 2.71,
+        "answer": "One guest voucher allows two devices per voucher. [1]",
+        "error": null
+      },
+      {
+        "question": "Can I connect my own router to the network?",
+        "correct": false,
+        "cited_correct": false,
+        "refused": true,
+        "unsupported_left": 0,
+        "seconds": 4.41,
+        "answer": "The uploaded documents do not contain enough information to answer this question.",
+        "error": null
+      },
+      {
+        "question": "Where can staff install software from?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 7.35,
+        "answer": "Staff may install software only from the Company Portal app catalogue [1]. If the software is not in the catalogue, it must be requested through a service ticket.",
+        "error": null
+      },
+      {
+        "question": "How long does a new software request review take?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 8.53,
+        "answer": "[1] Staff may install software only from the Company Portal app catalogue. Software that is not in the catalogue must be requested through a service ticket. Review. New software requests are reviewed by the IT Security Officer within 5 working days.",
+        "error": null
+      },
+      {
+        "question": "How long can free trial software be used?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.92,
+        "answer": "Free trial software may be used for at most 14 days before a licence is purchased. [1]",
+        "error": null
+      },
+      {
+        "question": "Is cryptocurrency mining software allowed?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.18,
+        "answer": "Peer-to-peer file sharing programs and cryptocurrency mining software are prohibited on all university devices. [1]",
+        "error": null
+      },
+      {
+        "question": "When are university servers backed up?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 7.42,
+        "answer": "University servers are backed up every night at 01:00 [1].",
+        "error": null
+      },
+      {
+        "question": "How long are server backups kept?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.64,
+        "answer": "Backups are kept for 90 days. [1]",
+        "error": null
+      },
+      {
+        "question": "How long are financial records archived?",
+        "correct": true,
+        "cited_correct": false,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.86,
+        "answer": "Financial records are archived for 10 years. [3]",
+        "error": null
+      },
+      {
+        "question": "How long does OneDrive keep previous versions?",
+        "correct": true,
+        "cited_correct": false,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.28,
+        "answer": "OneDrive keeps previous versions for 60 days. [3]",
+        "error": null
+      },
+      {
+        "question": "Do visitors need to be accompanied in server rooms?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 6.72,
+        "answer": "[1] Visitors must be accompanied by a staff member in the server rooms.",
+        "error": null
+      },
+      {
+        "question": "When do staff access cards open the building?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 7.01,
+        "answer": "Staff access cards open the main building between 07:00 and 22:00 on weekdays. [1]",
+        "error": null
+      },
+      {
+        "question": "How much does a replacement access card cost?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 7.23,
+        "answer": "A replacement access card costs 20 euros. [1]",
+        "error": null
+      },
+      {
+        "question": "Within how long must new staff finish the security awareness course?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 8.36,
+        "answer": "New staff must complete the information security awareness course within their first 2 weeks [1].",
+        "error": null
+      },
+      {
+        "question": "What score is needed to pass the security quiz?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 5.92,
+        "answer": "[2] Training and Onboarding. The security awareness course requires a score of 80 percent to pass the quiz.",
+        "error": null
+      },
+      {
+        "question": "How often must the data protection course be repeated?",
+        "correct": true,
+        "cited_correct": false,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 7.32,
+        "answer": "The data protection course must be repeated every 2 years. [2]",
+        "error": null
+      },
+      {
+        "question": "When are accounts for new staff created?",
+        "correct": true,
+        "cited_correct": true,
+        "refused": false,
+        "unsupported_left": 0,
+        "seconds": 7.79,
+        "answer": "New staff accounts are created 3 working days before their start date. [1]",
+        "error": null
+      }
+    ],
+    "unanswerable": [
+      {
+        "question": "What is the university's policy on electric company cars?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "How much does the cafeteria charge for lunch?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "Who won the university football tournament last year?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "What is the salary of a senior lecturer?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "How many parking spaces does the campus have?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "What is the dress code for graduation ceremonies?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "Which programming language is taught in the first semester?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      },
+      {
+        "question": "When does the library close on Sundays?",
+        "refused": true,
+        "answer": "The uploaded documents do not contain enough information to answer this question."
+      }
+    ]
+  },
+  "multi_doc": {
+    "scenarios": 5,
+    "relation_accuracy": 1.0,
+    "both_documents_used": 1.0,
+    "rows": [
+      {
+        "question": "Compare the paid annual leave in the 2025 and 2026 leave policies.",
+        "expected": "contradict",
+        "got": "contradict",
+        "correct": true,
+        "both_documents_used": true,
+        "seconds": 7.29,
+        "answer": "Leave Policy 2026.txt states that full-time staff receive 25 days of paid annual leave per year [1]. Leave Policy 2025.txt states that full-time staff receive 22 days of paid annual leave per year [2].",
+        "error": null
+      },
+      {
+        "question": "Do the 2025 and 2026 remote work policies agree?",
+        "expected": "contradict",
+        "got": "contradict",
+        "correct": true,
+        "both_documents_used": true,
+        "seconds": 1.59,
+        "answer": "Remote Work 2026.txt and Remote Work 2025.txt contradict each other. Remote Work 2026.txt says \"Remote work is not permitted for any staff from 2026\" [1], while Remote Work 2025.txt says \"Staff may work remotely up to two days per week with manager approval\" [2].",
+        "error": null
+      },
+      {
+        "question": "Compare the password length rules in standard A and standard B.",
+        "expected": "agree",
+        "got": "agree",
+        "correct": true,
+        "both_documents_used": true,
+        "seconds": 8.2,
+        "answer": "Password Standard A.txt states that passwords must be at least 14 characters long and include a symbol [1]. Password Standard B.txt states that every password must contain at least 14 characters, including one symbol [2]. Both documents agree that passwords must be at least 14 characters long [1][2]",
+        "error": null
+      },
+      {
+        "question": "What is the difference in backup retention between the old and new backup policy?",
+        "expected": "contradict",
+        "got": "contradict",
+        "correct": true,
+        "both_documents_used": true,
+        "seconds": 4.13,
+        "answer": "Backup Policy Old.txt states that server backups are kept for 30 days [1]. Backup Policy New.txt states that server backups are kept for 90 days [2].",
+        "error": null
+      },
+      {
+        "question": "Do the HQ and campus travel rules agree on flight class?",
+        "expected": "agree",
+        "got": "agree",
+        "correct": true,
+        "both_documents_used": true,
+        "seconds": 1.45,
+        "answer": "Travel Rules Campus.txt and Travel Rules HQ.txt agree. Travel Rules Campus.txt says \"Economy class is used for every flight shorter than 6 hours\" [1], and Travel Rules HQ.txt says \"Flights shorter than 6 hours are booked in economy class\" [2].",
+        "error": null
+      }
+    ]
+  },
+  "follow_up": {
+    "scenarios": 10,
+    "follow_up_alone": 0.8,
+    "follow_up_with_history": 0.9,
+    "rows": [
+      {
+        "first": "How long must a password be?",
+        "follow_up": "And how often must it be changed?",
+        "expect": "180 days",
+        "alone_correct": true,
+        "with_history_correct": true
+      },
+      {
+        "first": "What is the hotel limit in capital cities?",
+        "follow_up": "And elsewhere?",
+        "expect": "110 euros",
+        "alone_correct": false,
+        "with_history_correct": true
+      },
+      {
+        "first": "Which network do guests use?",
+        "follow_up": "How long is their voucher valid?",
+        "expect": "24 hours",
+        "alone_correct": true,
+        "with_history_correct": true
+      },
+      {
+        "first": "How many leave days do full-time staff get?",
+        "follow_up": "How many of them can be carried over?",
+        "expect": "5",
+        "alone_correct": true,
+        "with_history_correct": true
+      },
+      {
+        "first": "How quickly must a data incident be reported?",
+        "follow_up": "And who assesses it, within how many hours?",
+        "expect": "4 hours",
+        "alone_correct": true,
+        "with_history_correct": true
+      },
+      {
+        "first": "How often are laptops replaced?",
+        "follow_up": "What happens if one is stolen?",
+        "expect": "2 hours",
+        "alone_correct": true,
+        "with_history_correct": true
+      },
+      {
+        "first": "What is the mailbox storage limit?",
+        "follow_up": "What about attachments?",
+        "expect": "25 megabytes",
+        "alone_correct": true,
+        "with_history_correct": true
+      },
+      {
+        "first": "When are servers backed up?",
+        "follow_up": "Where are the copies kept?",
+        "expect": "Izmir",
+        "alone_correct": true,
+        "with_history_correct": true
+      },
+      {
+        "first": "When must new staff finish the security course?",
+        "follow_up": "What score do they need?",
+        "expect": "80 percent",
+        "alone_correct": false,
+        "with_history_correct": true
+      },
+      {
+        "first": "Where can I install software from?",
+        "follow_up": "How long can I use a trial?",
+        "expect": "14 days",
+        "alone_correct": true,
+        "with_history_correct": false
+      }
+    ]
+  }
+}

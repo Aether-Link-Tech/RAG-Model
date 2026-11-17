@@ -78,3 +78,22 @@ OCR engine(s) used: florence-2-base. CPU only. Total OCR time 80 s for 30 images
 | ocr_docx_09_low.docx | 1 | Network maintenance is planned for Sunday | Network maintenance is planned for Sunday | 0.98 | 100.0% |
 | ocr_docx_10_low.docx | 1 | Fire drills happen twice a year | Fire drills happen twice a year | 0.98 | 100.0% |
 | ocr_docx_10_low.docx | 2 | Feedback forms close at the end of May | Feedback forms close at the end of May | 0.98 | 100.0% |
+
+## Fallback engine: RapidOCR (AL-283)
+
+When Florence-2 cannot load, fails on an image, reads nothing, or is less confident than
+`OCR_FALLBACK_MIN_CONFIDENCE` (0.5), the image is read by RapidOCR (PaddleOCR detection and
+recognition models in ONNX, Apache-2.0). Its models ship inside the Python wheel (~15 MB), so it
+needs no download at run time and works offline. It loads in ~0.5 s (Florence-2: ~14 s). The
+better of the two results is kept, and everything stays within the 30 s per-document budget.
+
+Same 30 images and metric, measured with `python backend/tests/fixtures/ocr/evaluate_fallback.py`:
+
+| Image quality | Images | Florence-2 (primary) | RapidOCR (fallback) | Target |
+| --- | --- | --- | --- | --- |
+| clean | 14 | 99.6% | 97.9% | ≥ 90% |
+| low | 16 | 99.9% | 96.7% | ≥ 70% |
+
+RapidOCR: 3.4 s per image on CPU (measured while the machine was also building an image).
+Detected text boxes are put in reading order (top to bottom, left to right within a line).
+Florence-2 stays the primary engine because it is more accurate.

@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -113,91 +114,141 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-async def _embed_all(texts: list[str]) -> list[list[float]] | None:
-    try:
-        return await embedding.embed_texts(texts)
-    except Exception as exc:  # degrade to word-level checks
-        logger.warning("Claim verification without embeddings: %s", exc)
-        return None
+_VECTOR_CACHE: "OrderedDict[str, list[float]]" = OrderedDict()
+_CACHE_SIZE = 5000
 
 
-async def verify(answer: str, passages: Sequence[Passage]) -> Verification:
+async def _vectors(texts: list[str]) -> list[list[float]] | None:
+    """Embeddings with an in-process cache: passage sentences repeat across questions."""
+    missing = [t for t in dict.fromkeys(texts) if t not in _VECTOR_CACHE]
+    if missing:
+        try:
+            fresh = await embedding.embed_texts(missing)
+        except Exception as exc:  # degrade to word-level checks
+            logger.warning("Claim verification without embeddings: %s", exc)
+            return None
+        for text, vector in zip(missing, fresh):
+            _VECTOR_CACHE[text] = vector
+            if len(_VECTOR_CACHE) > _CACHE_SIZE:
+                _VECTOR_CACHE.popitem(last=False)
+    return [_VECTOR_CACHE[t] for t in texts]
+
+
+# Statements *about* the documents ("they agree", "No, the policies differ") are judged by the
+# comparison analysis (multi_doc), not by passage text.
+_RELATIONAL = re.compile(r"\b(agree|agrees|disagree|differ|differs|different|same|consistent|"
+                         r"inconsistent|contradict|contradicts|identical|conflict)\b", re.IGNORECASE)
+
+
+@dataclass
+class _Support:
+    score: float
+    index: int | None
+    numbers_ok: bool
+    polarity_ok: bool
+
+
+def _support(text: str, words: set[str], nums: set[str], claim_vec, scope: list[int],
+             evidence: list[tuple[int, str]], evid_vecs: dict[int, list[float]],
+             passage_texts: list[str]) -> _Support:
+    best_score, best_idx, topic_polarities = 0.0, None, set()
+    for ei, (pi, ev_text) in enumerate(evidence):
+        if pi not in scope:
+            continue
+        vec = evid_vecs.get(ei)
+        sim = _cosine(claim_vec, vec) if claim_vec is not None and vec is not None else 0.0
+        ev_words = _content_words(ev_text)
+        overlap = len(words & ev_words) / max(1, len(words))
+        # Same topic: close in meaning, or most of the source sentence's words are in the claim.
+        if sim >= settings.QA_SAME_TOPIC_SIMILARITY or len(words & ev_words) / max(1, len(ev_words)) >= 0.6:
+            topic_polarities.add(_negated(ev_text))
+        if max(sim, overlap) > best_score:
+            best_score, best_idx = max(sim, overlap), pi
+    # Word overlap ignores "not": reject when every same-topic source sentence has the opposite polarity.
+    polarity_ok = not topic_polarities or _negated(text) in topic_polarities
+    # A statement combining facts from several sentences of one passage is judged against the
+    # whole passage (only when its polarity agrees with the source).
+    for pi in scope:
+        whole = len(words & _content_words(passage_texts[pi])) / max(1, len(words))
+        if polarity_ok and whole > best_score:
+            best_score, best_idx = whole, pi
+    scope_text = " ".join(passage_texts[i] for i in scope)
+    return _Support(best_score, best_idx, nums <= _numbers(scope_text), polarity_ok)
+
+
+async def verify(answer: str, passages: Sequence[Passage], relational_ok: bool = False) -> Verification:
     claims = split_claims(answer)
     if not claims or not passages:
         return Verification(answer=answer)
 
     n = len(passages)
+    texts = [p.text for p in passages]
     fabricated = sorted({m for _, markers, _ in claims for m in markers if not 1 <= m <= n})
-    # Candidate evidence: every sentence of every passage, remembered with its passage index.
     evidence: list[tuple[int, str]] = [(i, s) for i, p in enumerate(passages) for s in _sentences(p.text)]
-    vectors = await _embed_all([c[0] for c in claims] + [s for _, s in evidence]) if evidence else None
-    claim_vecs = vectors[: len(claims)] if vectors else None
-    evid_vecs = vectors[len(claims):] if vectors else None
+    claim_vecs = await _vectors([c[0] for c in claims])
+    evid_vecs: dict[int, list[float]] = {}
+    loaded: set[int] = set()
+
+    async def ensure(indices: set[int]) -> None:
+        """Speed: embed a passage's sentences only when a statement needs that passage (cached)."""
+        todo = [ei for ei, (pi, _) in enumerate(evidence) if pi in indices and pi not in loaded]
+        loaded.update(indices)
+        if todo and claim_vecs is not None:
+            vecs = await _vectors([evidence[ei][1] for ei in todo])
+            if vecs:
+                evid_vecs.update(zip(todo, vecs))
 
     checks: list[ClaimCheck] = []
     kept_sentences: list[str] = []
     for ci, (text, markers, sentence) in enumerate(claims):
         valid = [m for m in markers if 1 <= m <= n]
         words, nums = _content_words(text), _numbers(text)
-        if not words and not nums:  # "Yes." / "In short:" carry no claim of their own
-            checks.append(ClaimCheck(text, valid, True, 1.0))
+        trivial = not words and not nums  # "Yes." / "In short:" carry no claim of their own
+        if trivial or (relational_ok and _RELATIONAL.search(text) and not nums):
+            checks.append(ClaimCheck(text, valid, True, 1.0, None,
+                                     None if trivial else "Statement about the documents; checked by the comparison."))
             kept_sentences.append(sentence)
             continue
-        # Cited passages first; an uncited claim may still be linked to any given passage (FR-044).
+        claim_vec = claim_vecs[ci] if claim_vecs else None
         scope = [m - 1 for m in valid] or list(range(n))
-        best_score, best_idx = 0.0, None
-        closest_sim = -1.0
-        topic_polarities: set[bool] = set()  # negated? for each source sentence on the same topic
-        for ei, (pi, ev_text) in enumerate(evidence):
-            if pi not in scope:
-                continue
-            sim = _cosine(claim_vecs[ci], evid_vecs[ei]) if claim_vecs else 0.0
-            ev_words = _content_words(ev_text)
-            overlap = len(words & ev_words) / max(1, len(words))
-            closest_sim = max(closest_sim, sim)
-            # Same topic: close in meaning, or most of the source sentence's words are in the claim.
-            if sim >= settings.QA_SAME_TOPIC_SIMILARITY or len(words & ev_words) / max(1, len(ev_words)) >= 0.6:
-                topic_polarities.add(_negated(ev_text))
-            score = max(sim, overlap)
-            if score > best_score:
-                best_score, best_idx = score, pi
-        # Word overlap ignores "not": a statement is rejected when every source sentence on its
-        # topic has the opposite polarity (e.g. "is permitted" vs "is not permitted"), unless its
-        # meaning is a near-exact match.
-        claim_negated = _negated(text)
-        polarity_ok = not topic_polarities or claim_negated in topic_polarities
-        # A statement that combines facts from several sentences of one passage is judged against
-        # the whole passage (only when its polarity agrees with the source).
-        for pi in scope:
-            whole = len(words & _content_words(passages[pi].text)) / max(1, len(words))
-            if polarity_ok and whole > best_score:
-                best_score, best_idx = whole, pi
-        scope_text = " ".join(passages[i].text for i in scope)
-        numbers_ok = nums <= _numbers(scope_text)
-        supported = numbers_ok and polarity_ok and best_score >= settings.QA_CLAIM_MIN_SUPPORT
+        await ensure(set(scope))
+        sup = _support(text, words, nums, claim_vec, scope, evidence, evid_vecs, texts)
+        supported = sup.numbers_ok and sup.polarity_ok and sup.score >= settings.QA_CLAIM_MIN_SUPPORT
+        corrected = False
+        if not supported and valid:
+            # The model may cite the wrong passage: try the others before removing a statement.
+            others = [i for i in range(n) if i not in scope]
+            if others:
+                await ensure(set(others))
+                alt = _support(text, words, nums, claim_vec, others, evidence, evid_vecs, texts)
+                if alt.numbers_ok and alt.polarity_ok and alt.score >= settings.QA_CLAIM_MIN_SUPPORT:
+                    sup, supported, corrected = alt, True, True
         reason = None
-        if not numbers_ok:
+        if not sup.numbers_ok:
             reason = "A number in this statement does not appear in the cited source."
-        elif not polarity_ok:
+        elif not sup.polarity_ok:
             reason = "This statement contradicts the cited source."
         elif not supported:
             reason = "This statement is not supported by the cited source."
+        elif corrected:
+            reason = "Citation corrected to the passage that supports it."
         elif not valid:
             reason = "Uncited statement linked to its supporting source."
-        chunk = passages[best_idx].chunk_id if best_idx is not None else None
-        checks.append(ClaimCheck(text, valid or ([best_idx + 1] if supported and best_idx is not None else []),
-                                 supported, round(best_score, 3), chunk if supported else None, reason))
+        linked = sup.index + 1 if sup.index is not None else None
+        out_markers = [linked] if supported and linked and (corrected or not valid) else valid
+        chunk = passages[sup.index].chunk_id if supported and sup.index is not None else None
+        checks.append(ClaimCheck(text, out_markers, supported, round(sup.score, 3), chunk, reason))
         if supported:
-            if not valid and best_idx is not None:  # FR-044: show the linked source in the text
-                sentence = f"{sentence.rstrip()} [{best_idx + 1}]"
+            if corrected:
+                bare = re.sub(r"\s*\[\d{1,3}\]", "", sentence).rstrip()
+                sentence = (f"{bare[:-1]} [{linked}]{bare[-1]}" if bare[-1:] in ".!?" else f"{bare} [{linked}]")
+            elif not valid and linked:  # FR-044: show the linked source in the text
+                sentence = f"{sentence.rstrip()} [{linked}]"
             kept_sentences.append(sentence)
 
     removed = sum(1 for c in checks if not c.supported)
-    linked = any(not c.reason or c.reason.startswith("Uncited") for c in checks if c.supported and c.reason)
-    if (removed or linked) and kept_sentences:
-        cleaned = " ".join(kept_sentences)
-    else:
-        cleaned = answer
+    changed = any(c.reason and c.reason.startswith(("Uncited", "Citation corrected")) for c in checks if c.supported)
+    cleaned = " ".join(kept_sentences) if (removed or changed) and kept_sentences else answer
     if removed:
         logger.info("Claim verification removed %d unsupported statement(s)", removed)
     return Verification(answer=cleaned, claims=checks, removed=removed if kept_sentences else 0,

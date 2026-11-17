@@ -84,15 +84,23 @@ async def prepare(
     include_public: bool = True,
     include_private: bool = True,
 ) -> PreparedQuestion:
-    comparison = multi_doc.is_comparison(question)
-    fetch = settings.QA_MULTIDOC_FETCH if comparison else settings.QA_RETRIEVAL_K
+    fetch = settings.QA_MULTIDOC_FETCH if multi_doc.is_comparison(question) else settings.QA_RETRIEVAL_K
     found = await retrieve(db, user_id, question, include_public, include_private, n_results=fetch)
+    return prepare_from_passages(question, found, conversation_id)
+
+
+def prepare_from_passages(question: str, found: list[Passage],
+                          conversation_id: uuid.UUID | None = None) -> PreparedQuestion:
+    """Everything after retrieval (shared by the API and the evaluation harness, FR-052-FR-056)."""
+    comparison = multi_doc.is_comparison(question)
     found, injected = _remove_injected_instructions(found)
     if comparison and multi_doc.document_count(found) >= 2:
         found = multi_doc.per_document(found)  # FR-033: top passages per document
     else:
         comparison = False
         found = sorted(found, key=lambda p: p.distance)[: settings.QA_RETRIEVAL_K]
+        if found:  # distractors far behind the best match only confuse a small model
+            found = [p for p in found if p.distance <= found[0].distance + settings.QA_RELATIVE_MARGIN]
     passages = select_passages(found, settings.QA_MAX_CONTEXT_TOKENS)
     enough = evidence_is_sufficient(passages)
     messages = (grounded_prompt.build_messages(question, passages, settings.LLM_MODEL, comparison=comparison)
@@ -180,11 +188,15 @@ def finalize(prepared: PreparedQuestion, raw_answer: str) -> ChatAnswer:
 
 async def complete_answer(prepared: PreparedQuestion, raw_answer: str) -> ChatAnswer:
     """finalize() plus the EP-09 checks: compromised output (FR-051) and claim verification
-    with claim-to-passage links (FR-049 / FR-050 / FR-044)."""
+    with claim-to-passage links (FR-049 / FR-050 / FR-044), and the EP-06 comparison (FR-035)."""
     result = finalize(prepared, raw_answer)
     result.injection_detected = prepared.injection_detected
+    analysis = await multi_doc.compare(prepared.passages) if prepared.comparison else None
     if result.insufficient:
-        return result
+        # A small model often declines "do they agree?" although the analysis has the answer.
+        if _usable(analysis):
+            return _comparison_summary(prepared, result, analysis)
+        return await _quote_fallback(prepared, result)
     if prompt_injection.answer_is_compromised(result.answer):
         logger.warning("Answer %s withheld: looks like injected output", prepared.message_id)
         return _updated(result, answer=prompt_injection.REFUSAL, sources=[], claims=[], uncertain=True,
@@ -192,11 +204,12 @@ async def complete_answer(prepared: PreparedQuestion, raw_answer: str) -> ChatAn
     if not settings.QA_VERIFY_CLAIMS:
         return result
 
-    check = await answer_verification.verify(result.answer, prepared.passages)
-    substantive = [c for c in check.claims if c.score < 1.0 or c.markers]
+    check = await answer_verification.verify(result.answer, prepared.passages, relational_ok=prepared.comparison)
+    substantive = [c for c in check.claims
+                   if (c.score < 1.0 or c.markers) and not (c.reason or "").startswith("Statement about")]
     if substantive and not any(c.supported for c in substantive):
         logger.info("Answer %s: no statement is supported by its sources", prepared.message_id)
-        return insufficient_answer(prepared)
+        return _comparison_summary(prepared, result, analysis) if _usable(analysis) else insufficient_answer(prepared)
 
     n = len(prepared.passages)
     markers = grounded_prompt.cited_markers(check.answer, n)
@@ -212,18 +225,14 @@ async def complete_answer(prepared: PreparedQuestion, raw_answer: str) -> ChatAn
         reason = f"{check.removed} statement(s) were removed because the sources do not support them."
     comparison = None
     final_text = check.answer
-    if prepared.comparison:
+    if analysis is not None:
         final_text = _name_documents(final_text, prepared.passages)
-        analysis = await multi_doc.compare([prepared.passages[m - 1] for m in supporting]
-                                           if len({prepared.passages[m - 1].document_id for m in supporting}) >= 2
-                                           else prepared.passages)
-        comparison = {"relation": analysis.relation, "documents": analysis.documents,
-                      "pairs": [vars(p) for p in analysis.pairs]}
-        final_text, false_agreements = multi_doc.drop_false_agreement(final_text, analysis)
-        if false_agreements:
-            check.removed += len(false_agreements)
-            check.claims.extend(answer_verification.ClaimCheck(s, [], False, 0.0, None, multi_doc.FALSE_AGREEMENT)
-                                for s in false_agreements)
+        comparison = _comparison_dict(analysis)
+        final_text, wrong = multi_doc.drop_wrong_relation(final_text, analysis)
+        if wrong:
+            check.removed += len(wrong)
+            check.claims.extend(answer_verification.ClaimCheck(s, [], False, 0.0, None, multi_doc.WRONG_RELATION)
+                                for s in wrong)
             uncertain = True
             reason = f"{check.removed} statement(s) were removed because the sources do not support them."
     return _updated(
@@ -235,6 +244,54 @@ async def complete_answer(prepared: PreparedQuestion, raw_answer: str) -> ChatAn
         removed_claims=check.removed,
         uncertain=uncertain,
         uncertain_reason=reason,
+    )
+
+
+async def _quote_fallback(prepared: PreparedQuestion, result: ChatAnswer) -> ChatAnswer:
+    """The model declined, but a source sentence may answer the question directly. If one is close
+    enough (QA_QUOTE_FALLBACK_MIN), answer with that sentence, quoted and cited; otherwise decline."""
+    candidates = [(i, s) for i, p in enumerate(prepared.passages, start=1) for s in multi_doc._sentences(p.text)]
+    if not candidates:
+        return result
+    vectors = await answer_verification._vectors([prepared.question] + [s for _, s in candidates])
+    if not vectors:
+        return result
+    scores = [answer_verification._cosine(vectors[0], v) for v in vectors[1:]]
+    best = max(range(len(scores)), key=scores.__getitem__)
+    if scores[best] < settings.QA_QUOTE_FALLBACK_MIN:
+        return result
+    marker, sentence = candidates[best]
+    passage = prepared.passages[marker - 1]
+    logger.info("Answer %s: model declined; quoted source sentence (similarity %.2f)", prepared.message_id, scores[best])
+    return _updated(
+        result,
+        answer=f'According to {passage.document_name}: "{sentence.rstrip(".")}" [{marker}].',
+        insufficient=False,
+        sources=[_source(marker, passage).model_dump()],
+        uncertain=True,
+        uncertain_reason="Quoted directly from the closest source sentence.",
+    )
+
+
+def _usable(analysis) -> bool:
+    return analysis is not None and analysis.relation in ("agree", "differ", "contradict") and bool(analysis.pairs)
+
+
+def _comparison_dict(analysis) -> dict:
+    return {"relation": analysis.relation, "documents": analysis.documents, "pairs": [vars(p) for p in analysis.pairs]}
+
+
+def _comparison_summary(prepared: PreparedQuestion, result: ChatAnswer, analysis) -> ChatAnswer:
+    """FR-035: answer a comparison from its analysis, quoting both documents with citations."""
+    text, markers = multi_doc.summary(analysis, prepared.passages)
+    return _updated(
+        result,
+        answer=text,
+        insufficient=False,
+        sources=[_source(m, prepared.passages[m - 1]).model_dump() for m in markers],
+        comparison=_comparison_dict(analysis),
+        uncertain=False,
+        uncertain_reason=None,
     )
 
 

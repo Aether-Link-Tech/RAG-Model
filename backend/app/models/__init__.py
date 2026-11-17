@@ -7,6 +7,7 @@ from backend.app.models.audit import SecurityAuditLog
 from backend.app.models.conversation import Conversation, Message
 from backend.app.models.fingerprint import DocumentFingerprint, DocumentFingerprintBand
 from backend.app.models.document_image import DocumentImage
+from backend.app.models.document_chunk import DocumentChunk
 
 __all__ = [
     "Base",
@@ -21,4 +22,5 @@ __all__ = [
     "DocumentFingerprint",
     "DocumentFingerprintBand",
     "DocumentImage",
+    "DocumentChunk",
 ]

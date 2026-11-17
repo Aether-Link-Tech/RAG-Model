@@ -541,3 +541,63 @@ def test_false_agreement_is_removed_only_when_documents_contradict():
     assert "agree" not in cleaned and "while a.txt allows it" in cleaned
     same = multi_doc.Comparison("agree", ["a.txt", "b.txt"])
     assert multi_doc.drop_false_agreement(text_, same) == (text_, [])
+
+
+# ---------------------------------------------------------------- fixes found by the EP-10 evaluation
+@pytest.mark.asyncio
+async def test_wrong_citation_is_corrected_not_removed():
+    passages = [_p(1, "Peer-to-peer programs are prohibited."),
+                _p(2, "The approved authenticator app is Microsoft Authenticator."),
+                _p(3, "Guests use the network FIU-Guest.")]
+    v = await answer_verification.verify("The approved authenticator app is Microsoft Authenticator [3].", passages)
+    assert v.claims[0].supported and v.claims[0].markers == [2]
+    assert "corrected" in v.claims[0].reason
+    assert v.answer == "The approved authenticator app is Microsoft Authenticator [2]."
+
+
+@pytest.mark.asyncio
+async def test_statements_about_the_documents_are_left_to_the_comparison():
+    passages = [_pd("a", 0, "Remote work is not permitted."), _pd("b", 0, "Remote work is allowed two days.")]
+    v = await answer_verification.verify("No, the two policies do not agree.", passages, relational_ok=True)
+    assert v.claims[0].supported and v.removed == 0
+    v = await answer_verification.verify("No, the two policies do not agree.", passages)
+    assert not v.claims[0].supported  # outside a comparison it is an ordinary, unsupported claim
+
+
+@pytest.mark.asyncio
+async def test_declined_comparison_is_answered_from_the_analysis():
+    passages = [_pd("Remote 2026", 0, "Remote work is not permitted for staff."),
+                _pd("Remote 2025", 0, "Remote work is permitted for staff.")]
+    prepared = _prepared(passages)
+    prepared.comparison = True
+    result = await qa.complete_answer(prepared, grounded_prompt.INSUFFICIENT_MARKER)
+    assert not result.insufficient and result.comparison.relation == "contradict"
+    assert "contradict each other" in result.answer and "[1]" in result.answer and "[2]" in result.answer
+    assert {s.document_name for s in result.sources} == {"Remote 2026.txt", "Remote 2025.txt"}
+
+
+def test_claimed_difference_is_removed_when_documents_agree():
+    agree = multi_doc.Comparison("agree", ["a.txt", "b.txt"])
+    text_ = "a.txt requires 14 characters [1]. The two standards do not agree on length [2]. b.txt also requires 14 [2]."
+    cleaned, dropped = multi_doc.drop_wrong_relation(text_, agree)
+    assert dropped == ["The two standards do not agree on length [2]."]
+    assert "14 characters" in cleaned
+
+
+@pytest.mark.asyncio
+async def test_declined_answer_falls_back_to_a_close_source_sentence(monkeypatch):
+    monkeypatch.setattr(settings, "QA_QUOTE_FALLBACK_MIN", 0.5)
+    passages = [_p(1, "Remote workers must connect through the university VPN, called FIU-Connect.")]
+    prepared = _prepared(passages)
+    prepared.question = "What is the university VPN called"
+    result = await qa.complete_answer(prepared, grounded_prompt.INSUFFICIENT_MARKER)
+    assert not result.insufficient and "FIU-Connect" in result.answer and result.answer.endswith("[1].")
+    assert result.uncertain and "Quoted" in result.uncertain_reason
+
+
+@pytest.mark.asyncio
+async def test_declined_answer_stays_declined_without_a_close_sentence(monkeypatch):
+    monkeypatch.setattr(settings, "QA_QUOTE_FALLBACK_MIN", 0.99)
+    prepared = _prepared([_p(1, "Remote workers must connect through the university VPN, called FIU-Connect.")])
+    prepared.question = "How much does lunch cost in the cafeteria"
+    assert (await qa.complete_answer(prepared, grounded_prompt.INSUFFICIENT_MARKER)).insufficient

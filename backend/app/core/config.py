@@ -78,10 +78,15 @@ class Settings(BaseConfig):
     # Question answering (Sprint 3: FR-028 / FR-030 / FR-031 / FR-046)
     LLM_TIMEOUT_SECONDS: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
-    QA_RETRIEVAL_K: int = int(os.getenv("QA_RETRIEVAL_K", "8"))
+    # EP-10 evaluation: 8 passages (~5.7k chars) made CPU answers ~10 s slower and confused the 3B
+    # model into refusing; 4 close passages answer faster and better (docs/EVALUATION.md).
+    QA_RETRIEVAL_K: int = int(os.getenv("QA_RETRIEVAL_K", "4"))
+    # Keep only passages within this distance of the best match (drops distractors).
+    QA_RELATIVE_MARGIN: float = float(os.getenv("QA_RELATIVE_MARGIN", "0.12"))
     QA_MAX_CONTEXT_TOKENS: int = int(os.getenv("QA_MAX_CONTEXT_TOKENS", "6000"))
     # Cosine distance at or above this is "not relevant enough" to answer from (FR-032 refines it).
-    QA_MAX_DISTANCE: float = float(os.getenv("QA_MAX_DISTANCE", "0.65"))
+    # Calibrated: relevant chunks 0.12-0.45 (p90 0.42); best match of unanswerable questions 0.40-0.56.
+    QA_MAX_DISTANCE: float = float(os.getenv("QA_MAX_DISTANCE", "0.55"))
     # FR-046: answers backed by fewer sources, or only weak matches, are flagged as uncertain.
     QA_UNCERTAIN_MIN_SOURCES: int = int(os.getenv("QA_UNCERTAIN_MIN_SOURCES", "2"))
     # Hallucination defence (EP-09)
@@ -97,6 +102,9 @@ class Settings(BaseConfig):
     # opposite rule 0.72, same topic but different point 0.62, different topic 0.44.
     QA_SAME_TOPIC_SIMILARITY: float = float(os.getenv("QA_SAME_TOPIC_SIMILARITY", "0.68"))
     QA_AGREE_SIMILARITY: float = float(os.getenv("QA_AGREE_SIMILARITY", "0.83"))
+    # When the model declines although a source sentence closely matches the question, answer with that
+    # sentence, quoted and cited. Calibrated: answerable questions >= 0.636, unanswerable <= 0.612.
+    QA_QUOTE_FALLBACK_MIN: float = float(os.getenv("QA_QUOTE_FALLBACK_MIN", "0.65"))
     QA_VERIFY_CLAIMS: bool = os.getenv("QA_VERIFY_CLAIMS", "True").lower() in ("true", "1")
     # Calibrated with nomic-embed-text: faithful paraphrases 0.88-0.90; plausible-but-unsupported
     # 0.71, wrong source 0.57, unrelated 0.54.

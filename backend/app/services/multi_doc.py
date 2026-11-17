@@ -55,25 +55,55 @@ class Comparison:
     pairs: list[Pair] = field(default_factory=list)
 
 
-FALSE_AGREEMENT = "The documents contradict each other on this point."
+WRONG_RELATION = "This statement misstates whether the documents agree."
+FALSE_AGREEMENT = WRONG_RELATION  # backwards-compatible name
 _AGREEMENT = re.compile(r"\b(agree|agrees|both (?:state|say|allow|require)|same|consistent|identical)\b", re.IGNORECASE)
-_CONTRAST = re.compile(r"\b(but|while|whereas|however|although|unlike|differ|contradict|instead)\b", re.IGNORECASE)
+_DISAGREEMENT = re.compile(r"\b(disagree|disagrees|differ|differs|different|contradict|contradicts|inconsistent|"
+                           r"conflict|conflicts|(?:do|does|did) not agree|don't agree|doesn't agree)\b", re.IGNORECASE)
+_CONTRAST = re.compile(r"\b(but|while|whereas|however|although|unlike|instead)\b", re.IGNORECASE)
+
+
+def drop_wrong_relation(answer: str, comparison: "Comparison") -> tuple[str, list[str]]:
+    """FR-035: remove sentences whose agree/disagree claim contradicts the analysis.
+
+    contradict -> "they agree" (with no contrast in the sentence) is wrong, even if each half is
+    true of one document. agree -> "they differ / do not agree" is wrong."""
+    from backend.app.services.answer_verification import split_sentences
+
+    if comparison.relation not in ("agree", "contradict"):
+        return answer, []
+    kept, dropped = [], []
+    for sentence in split_sentences(answer):
+        disagrees = bool(_DISAGREEMENT.search(sentence))
+        agrees = bool(_AGREEMENT.search(sentence)) and not disagrees
+        wrong = ((comparison.relation == "contradict" and agrees and not _CONTRAST.search(sentence))
+                 or (comparison.relation == "agree" and disagrees))
+        (dropped if wrong else kept).append(sentence.strip())
+    return (" ".join(s for s in kept if s), dropped) if dropped and kept else (answer, [])
 
 
 def drop_false_agreement(answer: str, comparison: "Comparison") -> tuple[str, list[str]]:
-    """FR-035: when the documents contradict each other, a sentence that claims they agree
-    (with no contrast in it) is wrong even if each half is true of one document. Remove it."""
-    if comparison.relation != "contradict":
-        return answer, []
-    kept, dropped = [], []
-    from backend.app.services.answer_verification import split_sentences
+    return drop_wrong_relation(answer, comparison)
 
-    for sentence in split_sentences(answer):
-        if _AGREEMENT.search(sentence) and not _CONTRAST.search(sentence):
-            dropped.append(sentence.strip())
-        else:
-            kept.append(sentence.strip())
-    return (" ".join(s for s in kept if s), dropped) if dropped and kept else (answer, [])
+
+def summary(comparison: "Comparison", passages: Sequence[Passage]) -> tuple[str, list[int]]:
+    """A cited, quoted answer built from the comparison itself (no model text)."""
+    def marker(quote: str, document: str) -> int:
+        for i, p in enumerate(passages, start=1):
+            if p.document_name == document and quote in p.text:
+                return i
+        return next(i for i, p in enumerate(passages, start=1) if p.document_name == document)
+
+    docs = " and ".join(comparison.documents[:2])
+    verb = {"agree": "agree", "contradict": "contradict each other", "differ": "differ"}[comparison.relation]
+    lines, used = [f"{docs} {verb}."], []
+    for pair in comparison.pairs[:3]:
+        a, b = marker(pair.quote_a, pair.document_a), marker(pair.quote_b, pair.document_b)
+        used += [m for m in (a, b) if m not in used]
+        joiner = "and" if pair.relation == "agree" else "while"
+        lines.append(f'{pair.document_a} says "{pair.quote_a.rstrip(".")}" [{a}], {joiner} '
+                     f'{pair.document_b} says "{pair.quote_b.rstrip(".")}" [{b}].')
+    return " ".join(lines), used
 
 
 def is_comparison(question: str) -> bool:

@@ -253,6 +253,11 @@ export default function DocumentsPage() {
           upsert(doc);
           if (doc.status === 'processing') toast.info('Re-indexing', 'The document will be searchable again shortly.');
         }}
+        onPublished={(oldId, doc) => {
+          setDocs((list) => [doc, ...(list ?? []).filter((d) => d.id !== oldId && d.id !== doc.id)]);
+          setSelectedId(doc.id);
+          void loadCollections();
+        }}
         onDeleted={(id) => {
           setSelectedId(null);
           setDocs((list) => (list ?? []).filter((d) => d.id !== id));

@@ -75,6 +75,11 @@ class Settings(BaseConfig):
         os.getenv("EMBEDDING_RETRY_BASE_DELAY", "0.5")
     )
 
+    # Semantic search (FR-022 / AL-216): results returned when the caller gives no top_k,
+    # and the most a caller may ask for in one request.
+    RETRIEVAL_DEFAULT_TOP_K: int = int(os.getenv("RETRIEVAL_DEFAULT_TOP_K", "5"))
+    RETRIEVAL_MAX_TOP_K: int = int(os.getenv("RETRIEVAL_MAX_TOP_K", "50"))
+
     # Question answering (Sprint 3: FR-028 / FR-030 / FR-031 / FR-046)
     LLM_TIMEOUT_SECONDS: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))

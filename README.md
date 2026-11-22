@@ -473,7 +473,14 @@ Or switch to the backend directory first: `cd backend && alembic upgrade head`.
 
 ### Running the worker
 
-From the repository root, start a Celery worker with:
+The Compose worker uses the backend image and shared upload/quarantine volumes:
+
+```bash
+docker compose up -d worker
+docker compose logs -f worker
+```
+
+To run the worker directly from the repository root instead:
 
 ```bash
 conda run -n rag-model celery -A backend.app.core.celery_app:celery_app worker --loglevel=info

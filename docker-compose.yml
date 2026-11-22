@@ -133,6 +133,61 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: rag-backend:latest
+    container_name: rag_worker
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_started
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ENV: development
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-rag_db}
+      APP_DB_USER: ${APP_DB_USER:-rag_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-rag_app_dev_password}
+      REDIS_URL: redis://redis:6379/0
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL_DOCKER:-http://host.docker.internal:11434}
+      UPLOAD_DIR: /data/uploads
+      CLAMAV_QUARANTINE_DIR: /data/quarantine
+      PARSER_INPUT_MODE: stdin
+      PARSER_SANDBOX_ENABLED: "True"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USE_TLS: "false"
+      EMAIL_VERIFICATION_URL: ${EMAIL_VERIFICATION_URL:-https://localhost/verify-email}
+      OCR_ENABLED: ${OCR_ENABLED:-true}
+      OCR_FALLBACK_ENABLED: ${OCR_FALLBACK_ENABLED:-true}
+    volumes:
+      - uploads_data:/data/uploads
+      - quarantine_data:/data/quarantine
+      - hf_cache:/root/.cache/huggingface
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - celery
+      - -A
+      - backend.app.core.celery_app:celery_app
+      - worker
+      - --loglevel=info
+
   frontend:
     build:
       context: frontend

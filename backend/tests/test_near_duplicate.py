@@ -7,6 +7,7 @@ import uuid
 
 import numpy as np
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 
 from backend.app.api.v1 import documents as documents_api
@@ -16,6 +17,17 @@ from backend.app.services import near_duplicate as nd
 from backend.tests.conftest import TestingSessionLocal, _CleanupSessionLocal, bearer, test_engine
 
 VOCAB_RNG = random.Random(81)
+
+
+@pytest_asyncio.fixture
+async def require_postgres():
+    try:
+        async with test_engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        if os.getenv("CI"):
+            pytest.fail(f"PostgreSQL required in CI but unreachable: {exc}")
+        pytest.skip(f"PostgreSQL unreachable: {exc}")
 
 
 def _words(n: int) -> list[str]:
@@ -169,7 +181,9 @@ async def test_dissimilar_upload_is_accepted_and_fingerprinted(async_client, tes
     assert left == 0  # removed with the document
 
 
-async def test_replacement_that_duplicates_another_document_fails_with_reason(async_client, test_user, real_indexing):
+async def test_replacement_that_duplicates_another_document_fails_with_reason(
+    require_postgres, async_client, test_user, real_indexing
+):
     x, x_near = pair_with_jaccard(0.8)
     y, _ = pair_with_jaccard(0.2)
     assert (await _upload(async_client, test_user, "report.txt", x)).status_code == 201
@@ -180,7 +194,10 @@ async def test_replacement_that_duplicates_another_document_fails_with_reason(as
     )
     assert res.status_code == 202, res.text
     doc = (await async_client.get(f"/api/v1/documents/{other['id']}", headers=bearer(test_user))).json()
-    assert doc["status"] == "failed" and "report.txt" in doc["error_message"]
+    assert doc["status"] == "failed"
+    assert doc["error_message"] == "A similar document already exists."
+    assert "report.txt" not in doc["error_message"]
+    assert "draft.txt" not in doc["error_message"]
 
 
 async def test_rls_hides_other_users_private_fingerprints(async_client, test_user, test_user_2, real_indexing):

@@ -479,7 +479,9 @@ async def test_index_document_marks_failed_on_parser_sandbox_error():
                side_effect=ParserSandboxError("Failed to parse document inside sandbox: EOF error")):
         result = await index_document(mock_db, doc)
         assert result.status == "failed"
-        assert "Failed to parse document inside sandbox" in result.error_message
+        assert result.error_message == "The file could not be read."
+        assert "EOF error" not in result.error_message
+        assert "corrupted.pdf" not in result.error_message
 
 
 @pytest.mark.asyncio
@@ -512,7 +514,9 @@ async def test_index_document_marks_failed_on_output_limit_exceeded():
                side_effect=ParserOutputLimitExceededError("Extracted text exceeded maximum size limit")):
         result = await index_document(mock_db, doc)
         assert result.status == "failed"
-        assert "exceeded maximum size limit" in result.error_message
+        assert result.error_message == "The file could not be read."
+        assert "maximum size limit" not in result.error_message
+        assert "huge.pdf" not in result.error_message
 
 
 @pytest.mark.asyncio

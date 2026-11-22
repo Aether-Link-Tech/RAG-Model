@@ -1,14 +1,17 @@
 import io
 import os
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.pool import NullPool
 
 from backend.app.api.v1 import documents as documents_api
 from backend.app.core.security import create_access_token
+from backend.app.services.near_duplicate import NearDuplicateError, NearDuplicateMatch
 from backend.tests.conftest import test_engine
 from backend.app.tasks import document_tasks
 
@@ -39,7 +42,7 @@ class FakeSession:
 def mock_task_session(monkeypatch):
     def configure(document):
         session = FakeSession(document)
-        monkeypatch.setattr(document_tasks, "AsyncSessionLocal", lambda: session)
+        monkeypatch.setattr(document_tasks, "WorkerSessionLocal", lambda: session)
         monkeypatch.setattr(
             document_tasks,
             "configure_rls_context",
@@ -61,6 +64,33 @@ def _document(document_id: uuid.UUID):
         status="pending",
         error_message=None,
     )
+
+
+def test_worker_engine_uses_null_pool():
+    assert isinstance(document_tasks.worker_engine.sync_engine.pool, NullPool)
+
+
+def test_task_disposes_worker_engine(monkeypatch):
+    events = []
+
+    async def process_document(*args):
+        events.append("process")
+
+    async def dispose_engine():
+        events.append("dispose")
+
+    monkeypatch.setattr(document_tasks, "_process_document", process_document)
+    monkeypatch.setattr(
+        document_tasks,
+        "worker_engine",
+        SimpleNamespace(dispose=dispose_engine),
+    )
+
+    document_tasks.process_document.apply(
+        args=[str(uuid.uuid4()), str(uuid.uuid4()), "user"]
+    )
+
+    assert events == ["process", "dispose"]
 
 
 def test_task_calls_index_document_with_requested_document(mock_task_session, monkeypatch):
@@ -107,7 +137,8 @@ def test_task_records_and_logs_unexpected_failure(
 
     assert result.get() is None
     assert document.status == "failed"
-    assert document.error_message == "Parser service unavailable"
+    assert document.error_message == "Processing failed. Please retry or contact support."
+    assert "Parser service unavailable" not in document.error_message
     assert "Unexpected indexing failure" in caplog.text
     assert "RuntimeError: Parser service unavailable" in caplog.text
 
@@ -178,6 +209,64 @@ async def test_replace_cleans_old_chunks_before_dispatching_task(
     assert dispatches == [
         (upload.json()["id"], str(test_user.id), test_user.role)
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.isolation
+async def test_near_duplicate_upload_is_discarded_before_celery_dispatch(
+    require_postgres,
+    async_client,
+    test_user,
+    monkeypatch,
+):
+    events = []
+    dispatches = []
+    rejected_paths = []
+    document_id = uuid.uuid4()
+
+    async def reject_duplicate(db, document):
+        events.append("check")
+        raise NearDuplicateError(
+            NearDuplicateMatch(document_id, "existing.txt", "own", 0.9)
+        )
+
+    original_discard = documents_api._discard_rejected_upload
+
+    async def record_cleanup(db, document):
+        events.append("cleanup")
+        rejected_paths.append(Path(document.file_path))
+        await original_discard(db, document)
+
+    async def record_audit(*args, **kwargs):
+        events.append("audit")
+
+    def record_dispatch(*args):
+        dispatches.append(args)
+        events.append("dispatch")
+
+    monkeypatch.setattr(
+        documents_api, "check_document_for_near_duplicate", reject_duplicate
+    )
+    monkeypatch.setattr(
+        documents_api, "_discard_rejected_upload", record_cleanup
+    )
+    monkeypatch.setattr(documents_api, "log_security_event", record_audit)
+    monkeypatch.setattr(document_tasks.process_document, "delay", record_dispatch)
+    token = create_access_token(test_user.id, role=test_user.role)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = await async_client.post(
+        "/api/v1/documents",
+        headers=headers,
+        files={"file": ("duplicate.txt", io.BytesIO(b"duplicate text"), "text/plain")},
+    )
+
+    assert response.status_code == 409, response.text
+    assert "existing.txt" in response.json()["detail"]
+    assert events == ["check", "cleanup", "audit"]
+    assert dispatches == []
+    assert len(rejected_paths) == 1
+    assert not rejected_paths[0].exists()
 
 
 @pytest.mark.asyncio

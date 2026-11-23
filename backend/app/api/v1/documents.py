@@ -623,12 +623,20 @@ async def download_document(
     db: DbSession,
     current_user: CurrentUser,
 ) -> StreamingResponse:
-    """Download an accessible document file (AL-182).
+    """Download a document file (AL-182), owner only.
 
-    Own documents and public documents only; another user's private document
-    is 404 (same rule as GET /documents/{id}). The stored path is never exposed.
+    Ask-only access: other users may ask questions about public documents and see the cited
+    passages, but only the uploader can download the file. Any other caller gets 404 (same as a
+    missing document, so nothing is revealed) and the attempt is audit-logged. The stored path
+    is never exposed.
     """
     document = await _accessible_document(db, current_user.id, document_id)
+    if document.user_id != current_user.id:
+        await log_security_event(
+            str(current_user.id), document.filename, "Download blocked: only the owner can download",
+            request.client.host if request.client else "unknown", audit_log.DOWNLOAD_BLOCKED,
+        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     try:
         file_obj = open_user_file_no_follow(document.user_id, document.file_path)

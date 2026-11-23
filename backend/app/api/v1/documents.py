@@ -40,11 +40,11 @@ from backend.app.services.document_ingest import (
 from backend.app.services.document_publish import PublishError, publish_private_document
 from backend.app.services.storage_paths import (
     UnsafeStoragePathError,
-    build_staging_path,
-    build_storage_path,
-    create_exclusive_staging_file,
-    open_user_file_no_follow,
-    resolve_user_file_path,
+    build_document_staging_path,
+    build_document_storage_path,
+    create_exclusive_document_staging_file,
+    open_document_file_no_follow,
+    resolve_document_file_path,
 )
 from backend.app.services.hash_service import (
     FileSizeLimitExceededError,
@@ -259,12 +259,19 @@ def _best_effort_remove(path: str | Path | None) -> None:
             pass
 
 
-def _best_effort_remove_user_file(user_id: uuid.UUID, path: str | Path | None) -> None:
-    """Remove ``path`` only if it resolves safely inside ``user_id``'s storage directory."""
+def _best_effort_remove_user_file(
+    user_id: uuid.UUID,
+    path: str | Path | None,
+    *,
+    visibility: Visibility = "private",
+) -> None:
+    """Remove ``path`` only if it resolves safely inside the document's allowed storage directory."""
     if not path:
         return
     try:
-        resolved = resolve_user_file_path(user_id, path, must_exist=False)
+        resolved = resolve_document_file_path(
+            user_id, path, visibility=visibility, must_exist=False
+        )
     except UnsafeStoragePathError:
         logger.warning("Refused to remove unsafe storage path for user %s", user_id)
         return
@@ -373,9 +380,15 @@ async def upload_document(
     document_id = uuid.uuid4()
     safe_filename = Path(file.filename or f"{document_id}{suffix}").name
     try:
-        file_path = build_storage_path(current_user.id, document_id, safe_filename)
-        tmp_path, buffer = create_exclusive_staging_file(
-            current_user.id, document_id, safe_filename, purpose="upload"
+        file_path = build_document_storage_path(
+            current_user.id, document_id, safe_filename, visibility=visibility
+        )
+        tmp_path, buffer = create_exclusive_document_staging_file(
+            current_user.id,
+            document_id,
+            safe_filename,
+            visibility=visibility,
+            purpose="upload",
         )
     except UnsafeStoragePathError as exc:
         await log_security_event(user_id_str, filename_str, f"Upload rejected: {exc}", client_ip)
@@ -402,6 +415,7 @@ async def upload_document(
                 str(tmp_path),
                 current_user.id,
                 document_id,
+                visibility=visibility,
             )
         except InfectedFileError as exc:
             client_ip = request.client.host if request.client else "unknown"
@@ -509,14 +523,15 @@ async def upload_document(
 
 async def _discard_rejected_upload(db: DbSession, document: Document) -> None:
     file_path, owner_id, document_id = document.file_path, document.user_id, document.id
-    remove_image_files(owner_id, document_id)
+    doc_visibility: Visibility = "public" if document.visibility == "public" else "private"
+    remove_image_files(owner_id, document_id, visibility=doc_visibility)
     try:
         await db.delete(document)
         await db.commit()
     except Exception:
         await _safe_rollback(db)
         logger.exception("Could not remove rejected near-duplicate document %s", document.id)
-    _best_effort_remove_user_file(owner_id, file_path)
+    _best_effort_remove_user_file(owner_id, file_path, visibility=doc_visibility)
 
 
 def _to_response(document: Document, caller_id: uuid.UUID) -> DocumentResponse:
@@ -630,8 +645,11 @@ async def download_document(
     """
     document = await _accessible_document(db, current_user.id, document_id)
 
+    doc_visibility: Visibility = "public" if document.visibility == "public" else "private"
     try:
-        file_obj = open_user_file_no_follow(document.user_id, document.file_path)
+        file_obj = open_document_file_no_follow(
+            document.user_id, document.file_path, visibility=doc_visibility
+        )
     except (UnsafeStoragePathError, FileNotFoundError) as exc:
         # Missing file, symlink, or stored path outside the owner's namespace: never serve it.
         reason = (
@@ -843,17 +861,24 @@ async def update_document(
     visibility: Visibility = "public" if document.visibility == "public" else "private"
     old_path = document.file_path
     try:
-        resolved_old_path = resolve_user_file_path(document.user_id, old_path, must_exist=False)
+        resolved_old_path = resolve_document_file_path(
+            document.user_id, old_path, visibility=visibility, must_exist=False
+        )
         replacement_path = Path(
-            build_storage_path(
+            build_document_storage_path(
                 document.user_id,
                 document.id,
                 replacement_name,
+                visibility=visibility,
                 variant=uuid.uuid4().hex,
             )
         )
-        temporary_path, buffer = create_exclusive_staging_file(
-            document.user_id, document.id, replacement_name, purpose="replace"
+        temporary_path, buffer = create_exclusive_document_staging_file(
+            document.user_id,
+            document.id,
+            replacement_name,
+            visibility=visibility,
+            purpose="replace",
         )
     except UnsafeStoragePathError as exc:
         await log_security_event(
@@ -876,7 +901,13 @@ async def update_document(
                 buffer.write(chunk)
             buffer.flush()
 
-        await asyncio.to_thread(scan_and_quarantine, str(temporary_path), actor_id, doc_id)
+        await asyncio.to_thread(
+            scan_and_quarantine,
+            str(temporary_path),
+            actor_id,
+            doc_id,
+            visibility=visibility,
+        )
         os.replace(temporary_path, replacement_path)
 
         document.filename = replacement_name
@@ -946,7 +977,9 @@ async def update_document(
         ) from exc
 
     if resolved_old_path != replacement_path.resolve():
-        _best_effort_remove_user_file(document.user_id, resolved_old_path)
+        _best_effort_remove_user_file(
+            document.user_id, resolved_old_path, visibility=visibility
+        )
     background_tasks.add_task(reindex_document_in_background, doc_id, actor_id, actor_role)
     await db.refresh(document)
     return _to_response(document, actor_id)
@@ -976,13 +1009,19 @@ async def delete_document(
             detail="Only the original uploader or an admin can delete a public document.",
         )
 
-    visibility = "public" if document.visibility == "public" else "private"
+    visibility: Visibility = "public" if document.visibility == "public" else "private"
     document_id = document.id
     owner_id = document.user_id
     try:
-        original_path = resolve_user_file_path(owner_id, document.file_path, must_exist=False)
-        staged_path = build_staging_path(
-            owner_id, document_id, purpose="delete", existing_path=original_path
+        original_path = resolve_document_file_path(
+            owner_id, document.file_path, visibility=visibility, must_exist=False
+        )
+        staged_path = build_document_staging_path(
+            owner_id,
+            document_id,
+            visibility=visibility,
+            purpose="delete",
+            existing_path=original_path,
         )
     except UnsafeStoragePathError as exc:
         await log_security_event(
@@ -1034,7 +1073,7 @@ async def delete_document(
             detail="Document deletion could not be completed. Please retry.",
         ) from exc
 
-    remove_image_files(owner_id, document_id)  # extracted images (FR-058); rows cascade
+    remove_image_files(owner_id, document_id, visibility=visibility)  # extracted images (FR-058); rows cascade
     if staged_file:
         try:
             staged_path.unlink()

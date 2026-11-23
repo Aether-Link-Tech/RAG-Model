@@ -48,8 +48,13 @@ def _may_contain_images(document: Document) -> bool:
 async def index_document(db: AsyncSession, document: Document) -> Document:
     # Captured up front: a rollback expires ORM attributes, which must not lazy-load later.
     owner_id, document_id = document.user_id, document.id
-    # Fail closed before any DB or file operation if the stored path leaves owner_id's namespace.
-    safe_file_path = str(resolve_user_file_path(owner_id, document.file_path, must_exist=False))
+    doc_visibility: Visibility = "public" if document.visibility == "public" else "private"
+    # Fail closed before any DB or file operation if the stored path leaves its allowed namespace.
+    safe_file_path = str(
+        resolve_document_file_path(
+            owner_id, document.file_path, visibility=doc_visibility, must_exist=False
+        )
+    )
     document.status = "processing"
     document.error_message = None
     await db.commit()
@@ -57,13 +62,18 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
 
     cancel_event = threading.Event()
     try:
-        safe_file_path = str(resolve_user_file_path(owner_id, document.file_path, must_exist=True))
+        safe_file_path = str(
+            resolve_document_file_path(
+                owner_id, document.file_path, visibility=doc_visibility, must_exist=True
+            )
+        )
         text = await asyncio.to_thread(
             extract_text,
             safe_file_path,
             document.mime_type,
             document.filename,
             owner_id=owner_id,
+            visibility=doc_visibility,
             cancel_event=cancel_event,
         )
         # FR-058 – FR-061: OCR embedded images and merge their text in reading order.
@@ -76,6 +86,7 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
                 document.mime_type,
                 document.filename,
                 owner_id=owner_id,
+                visibility=doc_visibility,
                 cancel_event=cancel_event,
             )
             if layout.get("images"):
@@ -136,7 +147,7 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
     except NearDuplicateError as exc:
         # Recorded on the document, then re-raised so an upload can be rejected cleanly.
         await db.rollback()
-        remove_image_files(owner_id, document_id)
+        remove_image_files(owner_id, document_id, visibility=doc_visibility)
         document.status = "failed"
         document.error_message = str(exc)
         await db.commit()
@@ -169,8 +180,12 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
 
 from backend.app.services.storage_paths import (
     UnsafeStoragePathError,
+    build_public_storage_path,
     build_staging_path,
     build_storage_path,
+    public_storage_dir,
+    resolve_document_file_path,
+    resolve_public_file_path,
     resolve_user_file_path,
     user_storage_dir,
     validate_safe_filename,

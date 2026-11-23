@@ -38,8 +38,8 @@ from backend.app.services import audit_log, near_duplicate
 from backend.app.services.document_ingest import index_document
 from backend.app.services.storage_paths import (
     UnsafeStoragePathError,
-    build_storage_path,
-    create_exclusive_staging_file,
+    build_public_storage_path,
+    create_exclusive_public_staging_file,
     open_user_file_no_follow,
     resolve_user_file_path,
 )
@@ -99,9 +99,9 @@ def _remove_file(path: str | Path | None) -> bool:
 
 
 def _copy_file(owner_id: uuid.UUID, new_id: uuid.UUID, source: Path, destination: str) -> None:
-    """Copy via an exclusive staging file inside ``owner_id``'s directory."""
-    tmp_path, dst_file = create_exclusive_staging_file(
-        owner_id, new_id, source.name, purpose="publish"
+    """Copy via an exclusive staging file inside the shared public documents directory."""
+    tmp_path, dst_file = create_exclusive_public_staging_file(
+        new_id, source.name, purpose="publish"
     )
     try:
         with dst_file, open_user_file_no_follow(owner_id, source) as src_file:
@@ -168,7 +168,7 @@ async def publish_private_document(
     new_path: str | None = None
     try:
         resolved_old_path = resolve_user_file_path(owner_id, old_path, must_exist=True)
-        new_path = build_storage_path(owner_id, new_id, resolved_old_path.name)
+        new_path = build_public_storage_path(new_id, resolved_old_path.name)
         await asyncio.to_thread(_copy_file, owner_id, new_id, resolved_old_path, new_path)
     except (OSError, UnsafeStoragePathError, ValueError) as exc:
         logger.exception("Publish: could not copy file for document %s", old_id)
@@ -292,7 +292,8 @@ async def publish_private_document(
 
 async def _keep_images(db: AsyncSession, owner_id, old_id, new_id, rows: list[dict]) -> None:
     """Move extracted images to the public copy: folder and document_images rows (FR-058)."""
-    old_folder, new_folder = image_folder(owner_id, old_id), image_folder(owner_id, new_id)
+    old_folder = image_folder(owner_id, old_id, visibility="private")
+    new_folder = image_folder(owner_id, new_id, visibility="public")
     try:
         if old_folder.is_dir():
             new_folder.parent.mkdir(parents=True, exist_ok=True)

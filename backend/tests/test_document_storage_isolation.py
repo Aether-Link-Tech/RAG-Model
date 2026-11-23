@@ -88,12 +88,14 @@ async def test_public_download_validates_against_original_owner(isolate_storage,
     user_a = _make_user()
     user_b = _make_user()
 
-    # Public document owned by User B, stored inside User B's namespace.
+    # Public document owned by User B, stored inside the shared public namespace.
+    from backend.app.services.storage_paths import build_public_storage_path
+
     doc_id = uuid.uuid4()
-    path_b = Path(build_storage_path(user_b.id, doc_id, "public.txt"))
-    path_b.write_text("public content", encoding="utf-8")
+    path_pub = Path(build_public_storage_path(doc_id, "public.txt"))
+    path_pub.write_text("public content", encoding="utf-8")
     public_doc = _make_doc(
-        owner_id=user_b.id, file_path=str(path_b), filename="public.txt", visibility="public"
+        owner_id=user_b.id, file_path=str(path_pub), filename="public.txt", visibility="public"
     )
 
     monkeypatch.setattr(documents_api, "_accessible_document", AsyncMock(return_value=public_doc))
@@ -104,15 +106,67 @@ async def test_public_download_validates_against_original_owner(isolate_storage,
     assert response.headers["content-length"] == str(len(b"public content"))
     assert 'attachment; filename="public.txt"' == response.headers["content-disposition"]
 
-    # If the public document's path is tampered to point into User A's directory, it must fail.
-    path_a = Path(build_storage_path(user_a.id, uuid.uuid4(), "trap.txt"))
-    path_a.write_text("trap", encoding="utf-8")
-    public_doc.file_path = str(path_a)
+    # If the public document's path is tampered to point into any user directory, it must fail.
     monkeypatch.setattr(documents_api, "log_security_event", AsyncMock())
+    for target_user in (user_a, user_b):
+        tampered = Path(build_storage_path(target_user.id, uuid.uuid4(), "trap.txt"))
+        tampered.write_text("trap", encoding="utf-8")
+        public_doc.file_path = str(tampered)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_a)
+        assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_legacy_public_file_is_rejected_until_migrated(
+    isolate_storage, chroma_client, monkeypatch
+):
+    """Deployment guard (AL-101 PR 1 -> PR 2): a legacy public file under users/{user_id}/documents/
+    must fail clearly on both download and integrity check until PR 2's migration runs."""
+    from backend.app.services.integrity_check import CRITICAL, DocumentRecord, check_integrity
+
+    owner = _make_user()
+    reader = _make_user()
+    doc_id = uuid.uuid4()
+
+    # Seed a legacy public document whose file sits inside users/{owner_id}/documents/.
+    legacy_path = Path(build_storage_path(owner.id, doc_id, "legacy_public.txt"))
+    legacy_path.write_text("legacy public payload", encoding="utf-8")
+    legacy_doc = _make_doc(
+        owner_id=owner.id,
+        file_path=str(legacy_path),
+        filename="legacy_public.txt",
+        visibility="public",
+    )
+    legacy_doc.id = doc_id
+
+    # 1. Download fails closed with 404 and logs a security audit event.
+    audit_mock = AsyncMock()
+    monkeypatch.setattr(documents_api, "_accessible_document", AsyncMock(return_value=legacy_doc))
+    monkeypatch.setattr(documents_api, "log_security_event", audit_mock)
 
     with pytest.raises(HTTPException) as exc_info:
-        await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_a)
+        await documents_api.download_document(_make_request(), doc_id, AsyncMock(), reader)
     assert exc_info.value.status_code == 404
+    assert "not found" in exc_info.value.detail.lower()
+    audit_mock.assert_awaited_once()
+
+    # 2. Integrity check flags the unmigrated public file as CRITICAL (not silent success).
+    record = DocumentRecord(
+        id=doc_id,
+        user_id=owner.id,
+        visibility="public",
+        status="pending",
+        file_path=str(legacy_path),
+    )
+    report = check_integrity([record], chroma_client=chroma_client, upload_dir=isolate_storage)
+    outside = report.by_kind("file_outside_owner_folder")
+    assert len(outside) == 1
+    assert outside[0].document_id == str(doc_id)
+    assert outside[0].severity == CRITICAL
+    assert "shared public folder" in outside[0].detail
+    assert report.has_critical
 
 
 @pytest.mark.asyncio
@@ -306,19 +360,19 @@ async def test_download_uses_open_user_file_no_follow_and_closes_fd_on_disconnec
 
     calls = []
     opened_handles = []
-    real_open = storage_paths.open_user_file_no_follow
+    real_open = storage_paths.open_document_file_no_follow
 
-    def spy_open(owner_id, stored_path):
-        calls.append((owner_id, stored_path))
-        handle = real_open(owner_id, stored_path)
+    def spy_open(owner_id, stored_path, *, visibility="private"):
+        calls.append((owner_id, stored_path, visibility))
+        handle = real_open(owner_id, stored_path, visibility=visibility)
         opened_handles.append(handle)
         return handle
 
-    monkeypatch.setattr(documents_api, "open_user_file_no_follow", spy_open)
+    monkeypatch.setattr(documents_api, "open_document_file_no_follow", spy_open)
 
     response = await documents_api.download_document(_make_request(), doc_a.id, AsyncMock(), user_a)
     assert isinstance(response, StreamingResponse)
-    assert calls == [(user_a.id, str(path_a))]
+    assert calls == [(user_a.id, str(path_a), "private")]
     assert len(opened_handles) == 1
     assert not opened_handles[0].closed
 
@@ -647,7 +701,7 @@ def test_remove_image_files_cannot_redirect_deletion_via_symlink(isolate_storage
     sym_folder = user_storage_dir(user_a, create=True) / "images" / str(doc_a)
     sym_folder.parent.mkdir(parents=True, exist_ok=True)
     sym_folder.symlink_to(dir_b)
-    monkeypatch.setattr(document_images, "image_folder", lambda u, d: sym_folder)
+    monkeypatch.setattr(document_images, "image_folder", lambda u, d, **_kw: sym_folder)
 
     with pytest.raises(UnsafeStoragePathError):
         document_images.remove_image_files(user_a, doc_a)

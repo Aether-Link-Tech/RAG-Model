@@ -11,9 +11,10 @@ import clamd
 
 from backend.app.core.config import settings
 from backend.app.services.storage_paths import (
+    StorageVisibility,
     build_quarantine_path,
-    open_user_file_no_follow,
-    resolve_user_file_path,
+    open_document_file_no_follow,
+    resolve_document_file_path,
 )
 
 
@@ -33,6 +34,8 @@ def _move_to_quarantine_no_overwrite(
     owner_id: uuid.UUID,
     source: Path,
     destination: Path,
+    *,
+    visibility: StorageVisibility = "private",
 ) -> None:
     """Move ``source`` to ``destination`` without overwriting an existing quarantine file."""
     try:
@@ -49,7 +52,9 @@ def _move_to_quarantine_no_overwrite(
             destination.unlink(missing_ok=True)
             raise
         try:
-            with dst_file, open_user_file_no_follow(owner_id, source) as src_file:
+            with dst_file, open_document_file_no_follow(
+                owner_id, source, visibility=visibility
+            ) as src_file:
                 shutil.copyfileobj(src_file, dst_file)
                 dst_file.flush()
                 os.fsync(dst_file.fileno())
@@ -67,6 +72,8 @@ def scan_and_quarantine(
     path: str,
     user_id: uuid.UUID | str,
     document_id: uuid.UUID | str,
+    *,
+    visibility: StorageVisibility = "private",
 ) -> None:
     """Scan a staged upload through INSTREAM, moving detections to quarantine.
 
@@ -75,7 +82,9 @@ def scan_and_quarantine(
     """
     owner_id = uuid.UUID(str(user_id))
     doc_id = uuid.UUID(str(document_id))
-    resolved_source = resolve_user_file_path(owner_id, path, must_exist=True)
+    resolved_source = resolve_document_file_path(
+        owner_id, path, visibility=visibility, must_exist=True
+    )
     # Validate the quarantine destination before connecting or moving anything.
     build_quarantine_path(owner_id, doc_id, create_dir=False)
 
@@ -87,7 +96,9 @@ def scan_and_quarantine(
         )
         if client.ping() != "PONG":
             raise ClamAVUnavailableError("ClamAV did not respond to ping")
-        with open_user_file_no_follow(owner_id, resolved_source) as upload_stream:
+        with open_document_file_no_follow(
+            owner_id, resolved_source, visibility=visibility
+        ) as upload_stream:
             result = client.instream(upload_stream)
     except ClamAVUnavailableError:
         raise
@@ -101,10 +112,14 @@ def scan_and_quarantine(
     if state == "OK":
         return
     if state == "FOUND":
-        resolved_source = resolve_user_file_path(owner_id, path, must_exist=True)
+        resolved_source = resolve_document_file_path(
+            owner_id, path, visibility=visibility, must_exist=True
+        )
         quarantine_path = build_quarantine_path(owner_id, doc_id, create_dir=True)
         try:
-            _move_to_quarantine_no_overwrite(owner_id, resolved_source, quarantine_path)
+            _move_to_quarantine_no_overwrite(
+                owner_id, resolved_source, quarantine_path, visibility=visibility
+            )
         except OSError as exc:
             raise ClamAVUnavailableError("Detected file could not be quarantined") from exc
         raise InfectedFileError(str(signature or "malware detected"))

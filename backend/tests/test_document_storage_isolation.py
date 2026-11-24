@@ -99,22 +99,29 @@ async def test_public_download_validates_against_original_owner(isolate_storage,
     )
 
     monkeypatch.setattr(documents_api, "_accessible_document", AsyncMock(return_value=public_doc))
-    response = await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_a)
+    monkeypatch.setattr(documents_api, "log_security_event", AsyncMock())
+
+    # Ask-only access: a non-owner never downloads a public document's file.
+    with pytest.raises(HTTPException) as exc_info:
+        await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_a)
+    assert exc_info.value.status_code == 404
+
+    # The owner downloads it from the shared public namespace.
+    response = await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_b)
     assert isinstance(response, StreamingResponse)
     chunks = [chunk async for chunk in response.body_iterator]
     assert b"".join(chunks) == b"public content"
     assert response.headers["content-length"] == str(len(b"public content"))
     assert 'attachment; filename="public.txt"' == response.headers["content-disposition"]
 
-    # If the public document's path is tampered to point into any user directory, it must fail.
-    monkeypatch.setattr(documents_api, "log_security_event", AsyncMock())
+    # If the public document's path is tampered to point into any user directory, even the owner gets 404.
     for target_user in (user_a, user_b):
         tampered = Path(build_storage_path(target_user.id, uuid.uuid4(), "trap.txt"))
         tampered.write_text("trap", encoding="utf-8")
         public_doc.file_path = str(tampered)
 
         with pytest.raises(HTTPException) as exc_info:
-            await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_a)
+            await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_b)
         assert exc_info.value.status_code == 404
 
 
@@ -127,7 +134,6 @@ async def test_legacy_public_file_is_rejected_until_migrated(
     from backend.app.services.integrity_check import CRITICAL, DocumentRecord, check_integrity
 
     owner = _make_user()
-    reader = _make_user()
     doc_id = uuid.uuid4()
 
     # Seed a legacy public document whose file sits inside users/{owner_id}/documents/.
@@ -141,13 +147,13 @@ async def test_legacy_public_file_is_rejected_until_migrated(
     )
     legacy_doc.id = doc_id
 
-    # 1. Download fails closed with 404 and logs a security audit event.
+    # 1. Even the owner's download fails closed with 404 and logs a security audit event.
     audit_mock = AsyncMock()
     monkeypatch.setattr(documents_api, "_accessible_document", AsyncMock(return_value=legacy_doc))
     monkeypatch.setattr(documents_api, "log_security_event", audit_mock)
 
     with pytest.raises(HTTPException) as exc_info:
-        await documents_api.download_document(_make_request(), doc_id, AsyncMock(), reader)
+        await documents_api.download_document(_make_request(), doc_id, AsyncMock(), owner)
     assert exc_info.value.status_code == 404
     assert "not found" in exc_info.value.detail.lower()
     audit_mock.assert_awaited_once()

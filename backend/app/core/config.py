@@ -75,6 +75,13 @@ class Settings(BaseConfig):
         os.getenv("EMBEDDING_RETRY_BASE_DELAY", "0.5")
     )
 
+    # Keyword search (FR-023): BM25 parameters and the per-user index cache. The TTL is a
+    # safety net for chunks written by another process; same-process writes rebuild at once.
+    BM25_K1: float = float(os.getenv("BM25_K1", "1.2"))
+    BM25_B: float = float(os.getenv("BM25_B", "0.75"))
+    KEYWORD_INDEX_TTL_SECONDS: float = float(os.getenv("KEYWORD_INDEX_TTL_SECONDS", "300"))
+    KEYWORD_INDEX_CACHE_SIZE: int = int(os.getenv("KEYWORD_INDEX_CACHE_SIZE", "64"))
+
     # Question answering (Sprint 3: FR-028 / FR-030 / FR-031 / FR-046)
     LLM_TIMEOUT_SECONDS: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
@@ -111,6 +118,14 @@ class Settings(BaseConfig):
     QA_CLAIM_MIN_SUPPORT: float = float(os.getenv("QA_CLAIM_MIN_SUPPORT", "0.78"))
     # Calibrated on nomic-embed-text: correct single-passage answers scored 0.64-0.72 similarity.
     QA_UNCERTAIN_MAX_DISTANCE: float = float(os.getenv("QA_UNCERTAIN_MAX_DISTANCE", "0.5"))
+
+    # Public landing page Q&A: guests ask questions over admin-approved showcase documents only.
+    PUBLIC_ASK_ENABLED: bool = os.getenv("PUBLIC_ASK_ENABLED", "True").lower() in ("true", "1")
+    PUBLIC_ASK_PER_MINUTE: int = int(os.getenv("PUBLIC_ASK_PER_MINUTE", "5"))
+    PUBLIC_ASK_PER_DAY: int = int(os.getenv("PUBLIC_ASK_PER_DAY", "30"))
+    PUBLIC_QUESTION_MAX_CHARS: int = int(os.getenv("PUBLIC_QUESTION_MAX_CHARS", "500"))
+    # Guests see an excerpt around the highlighted sentence, never a whole chunk (no document rebuild).
+    PUBLIC_SOURCE_MAX_CHARS: int = int(os.getenv("PUBLIC_SOURCE_MAX_CHARS", "400"))
 
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", DEFAULT_DEV_SECRET_KEY)

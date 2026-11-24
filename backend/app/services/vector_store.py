@@ -9,6 +9,7 @@ document Row-Level Security policies.
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, Sequence
@@ -48,6 +49,27 @@ class RetrievedChunk:
 
 def _owner_hex(user_id: uuid.UUID | str) -> str:
     return uuid.UUID(str(user_id)).hex
+
+
+# FR-023 / AL-221: every write to a collection bumps its generation, so cached keyword
+# (BM25) indexes built from it know they are out of date.
+_generation_lock = threading.Lock()
+_generations: dict[str, int] = {}
+
+
+def _scope_key(user_id: uuid.UUID | str | None, visibility: Visibility) -> str:
+    return "public" if visibility == "public" else f"private:{_owner_hex(user_id)}"
+
+
+def mark_chunks_changed(user_id: uuid.UUID | str | None, visibility: Visibility) -> None:
+    key = _scope_key(user_id, visibility)
+    with _generation_lock:
+        _generations[key] = _generations.get(key, 0) + 1
+
+
+def chunk_generation(user_id: uuid.UUID | str | None, visibility: Visibility) -> int:
+    with _generation_lock:
+        return _generations.get(_scope_key(user_id, visibility), 0)
 
 
 def _owner_filter(user_id: uuid.UUID | str) -> dict[str, Any]:
@@ -101,12 +123,15 @@ def upsert_chunks(
         _chunk_metadata(user_id, visibility, metadatas[i] if metadatas else None)
         for i in range(len(ids))
     ]
-    collection.upsert(
-        ids=list(ids),
-        embeddings=list(embeddings),
-        documents=list(documents),
-        metadatas=merged_metadata,
-    )
+    try:
+        collection.upsert(
+            ids=list(ids),
+            embeddings=list(embeddings),
+            documents=list(documents),
+            metadatas=merged_metadata,
+        )
+    finally:
+        mark_chunks_changed(user_id, visibility)
 
 
 def cleanup_stale_document_chunks(
@@ -135,7 +160,10 @@ def cleanup_stale_document_chunks(
     current_ids = set(chunk_ids)
     stale_ids = [chunk_id for chunk_id in existing_ids if chunk_id not in current_ids]
     if stale_ids:
-        collection.delete(ids=stale_ids, where=where)
+        try:
+            collection.delete(ids=stale_ids, where=where)
+        finally:
+            mark_chunks_changed(user_id, visibility)
 
 
 def query_for_user(
@@ -385,6 +413,55 @@ async def query_authorized_chunks(
     return authorized[:n_results]
 
 
+async def query_showcase_chunks(
+    *,
+    db: AsyncSession,
+    query_embedding: Sequence[float],
+    n_results: int = 10,
+) -> list[RetrievedChunk]:
+    """Guest retrieval for the public landing page: showcase documents only.
+
+    `db` must carry the guest RLS context (configure_guest_rls_context), so PostgreSQL itself
+    returns only indexed public showcase documents. ChromaDB is searched only inside those
+    documents, and every hit is re-checked against the same rows before it is returned.
+    """
+    if n_results < 1:
+        raise ValueError("n_results must be at least 1")
+    try:
+        result = await db.execute(
+            select(Document.id).where(
+                Document.showcase.is_(True),
+                Document.visibility == "public",
+                Document.status == "indexed",
+            )
+        )
+        allowed = {str(row.id) for row in result.all()}
+    except Exception as exc:
+        logger.exception("Showcase authorization query failed under RLS")
+        raise DatabaseAuthorizationError("Failed to verify showcase documents") from exc
+    if not allowed:
+        return []
+
+    where = {"$and": [
+        {"visibility": {"$eq": "public"}},
+        {"document_id": {"$in": sorted(allowed)}},
+    ]}
+    hits = _query_collection(
+        collection=get_public_collection(),
+        query_embedding=query_embedding,
+        n_results=max(n_results * 2, 10),
+        visibility="public",
+        where=where,
+    )
+    authorized = [
+        hit for hit in hits
+        if is_valid_chunk_metadata(hit.metadata, "public")
+        and str(hit.metadata.get("document_id")) in allowed
+    ]
+    authorized.sort(key=lambda hit: hit.distance)
+    return authorized[:n_results]
+
+
 def delete_document_chunks(
     *,
     user_id: uuid.UUID | str,
@@ -405,7 +482,10 @@ def delete_document_chunks(
             return
     else:
         collection = get_public_collection()
-    collection.delete(where=where)
+    try:
+        collection.delete(where=where)
+    finally:
+        mark_chunks_changed(user_id, visibility)
 
 
 def copy_private_chunks_to_public(
@@ -497,12 +577,18 @@ def rename_document_chunks(
     metadatas = stored.get("metadatas") or []
     if not ids:
         return
-    collection.update(
-        ids=ids,
-        metadatas=[{**(metadata or {}), "filename": filename} for metadata in metadatas],
-    )
+    try:
+        collection.update(
+            ids=ids,
+            metadatas=[{**(metadata or {}), "filename": filename} for metadata in metadatas],
+        )
+    finally:
+        mark_chunks_changed(user_id, visibility)
 
 
 def delete_user_private_knowledge(user_id: uuid.UUID | str) -> bool:
     """Delete a user's private collection only. Public chunks stay indexed."""
-    return delete_private_collection(user_id)
+    try:
+        return delete_private_collection(user_id)
+    finally:
+        mark_chunks_changed(user_id, "private")

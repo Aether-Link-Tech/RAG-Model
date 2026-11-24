@@ -1,8 +1,9 @@
-// Side panel for one document: details (FR-009), download, rename/replace (FR-010),
-// delete with confirmation (FR-011).
+// Side panel for one document: details (FR-009), download (owner only), rename/replace (FR-010),
+// delete with confirmation (FR-011), publish a private document to everyone (FR-082),
+// and for admins the landing-page showcase switch.
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, FilePen, RefreshCcw, Trash2, TriangleAlert, X } from 'lucide-react';
+import { Download, FilePen, Globe, MessageSquareText, RefreshCcw, Trash2, TriangleAlert, X } from 'lucide-react';
 import Button from './Button';
 import FileIcon from './FileIcon';
 import Modal from './Modal';
@@ -13,10 +14,13 @@ import { precheck } from './UploadPanel';
 import {
   deleteDocument,
   downloadDocument,
+  publishDocument,
   renameDocument,
   replaceDocument,
 } from '../services/documentService';
 import { moveDocument } from '../services/collectionService';
+import { setShowcase } from '../services/adminService';
+import { useSession } from '../hooks/useSession';
 import { getErrorMessage, hasStatus } from '../services/api';
 import { describeUploadError, type UploadRejection } from '../utils/uploadErrors';
 import { extensionOf, formatBytes, formatDate } from '../utils/format';
@@ -30,6 +34,8 @@ interface Props {
   onChanged: (doc: Document) => void;
   onMoved?: (doc: Document) => void;
   onDeleted: (id: string) => void;
+  /** Publishing replaces the private document with a new public one (new id). */
+  onPublished?: (oldId: string, doc: Document) => void;
 }
 
 export default function DocumentDrawer({
@@ -40,31 +46,38 @@ export default function DocumentDrawer({
   onChanged,
   onMoved,
   onDeleted,
+  onPublished,
 }: Props) {
   const toast = useToast();
   const replaceInput = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState('');
-  const [busy, setBusy] = useState<null | 'download' | 'rename' | 'replace' | 'delete' | 'move'>(null);
+  const [busy, setBusy] = useState<null | 'download' | 'rename' | 'replace' | 'delete' | 'move' | 'publish' | 'showcase'>(null);
+  const [confirmPublish, setConfirmPublish] = useState(false);
+  const { user } = useSession();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [rejection, setRejection] = useState<(UploadRejection & { filename: string }) | null>(null);
 
   useEffect(() => {
     setRenaming(false);
     setConfirmDelete(false);
+    setConfirmPublish(false);
     setName(doc?.filename ?? '');
   }, [doc?.id]);
 
   useEffect(() => {
     if (!doc) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !confirmDelete && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !confirmDelete && !confirmPublish && onClose();
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [doc, confirmDelete, onClose]);
+  }, [doc, confirmDelete, confirmPublish, onClose]);
 
   if (!doc) return null;
   const current = doc;
   const owner = current.is_owner;
+  const canPublish = owner && current.visibility === 'private';
+  const publishReady = current.status === 'indexed';
+  const isAdmin = user?.role === 'admin';
 
   async function move(collectionId: string | null) {
     if (!doc) return;
@@ -87,6 +100,22 @@ export default function DocumentDrawer({
       await downloadDocument(current);
     } catch (error) {
       toast.error('Download failed', hasStatus(error, 404) ? 'The file is no longer available.' : getErrorMessage(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function toggleShowcase() {
+    setBusy('showcase');
+    try {
+      const result = await setShowcase(current.id, !current.showcase);
+      onChanged({ ...current, showcase: result.showcase });
+      toast.success(
+        result.showcase ? 'Shown on the landing page' : 'Removed from the landing page',
+        result.showcase ? 'Guests can now ask questions about this document.' : current.filename,
+      );
+    } catch (error) {
+      toast.error('Could not change landing page access', getErrorMessage(error));
     } finally {
       setBusy(null);
     }
@@ -129,6 +158,21 @@ export default function DocumentDrawer({
       toast.success('File replaced', 'Re-indexing in the background.');
     } catch (error) {
       setRejection({ ...describeUploadError(error), filename: file.name });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function publish() {
+    setBusy('publish');
+    try {
+      const published = await publishDocument(current.id);
+      setConfirmPublish(false);
+      (onPublished ?? ((_: string, d: Document) => onChanged(d)))(current.id, published);
+      if (published.warning) toast.info('Published with a warning', published.warning);
+      else toast.success('Published', `${published.filename} is now shared with everyone.`);
+    } catch (error) {
+      toast.error('Publish failed', getErrorMessage(error));
     } finally {
       setBusy(null);
     }
@@ -249,9 +293,23 @@ export default function DocumentDrawer({
         </dl>
 
         <div className="drawer__actions">
-          <Button wide onClick={download} loading={busy === 'download'} loadingText="Preparing download">
-            <Download size={17} /> Download
-          </Button>
+          {owner && (
+            <Button wide onClick={download} loading={busy === 'download'} loadingText="Preparing download">
+              <Download size={17} /> Download
+            </Button>
+          )}
+          {isAdmin && current.visibility === 'public' && current.status === 'indexed' && (
+            <Button
+              variant="ghost"
+              wide
+              onClick={toggleShowcase}
+              loading={busy === 'showcase'}
+              loadingText="Saving"
+              disabled={busy !== null && busy !== 'showcase'}
+            >
+              <Globe size={16} /> {current.showcase ? 'Remove from landing page' : 'Show on landing page'}
+            </Button>
+          )}
           {owner && (
             <div className="drawer__row">
               <Button variant="ghost" onClick={() => setRenaming(true)} disabled={busy !== null || renaming}>
@@ -267,12 +325,28 @@ export default function DocumentDrawer({
               </Button>
             </div>
           )}
+          {canPublish && (
+            <Button
+              variant="ghost"
+              wide
+              onClick={() => setConfirmPublish(true)}
+              disabled={busy !== null || !publishReady}
+              title={publishReady ? 'Share this document with every user' : 'Available once the document is indexed'}
+            >
+              <Globe size={16} /> Publish to everyone
+            </Button>
+          )}
           {canDelete && (
             <Button variant="danger" wide onClick={() => setConfirmDelete(true)} disabled={busy !== null}>
               <Trash2 size={16} /> Delete document
             </Button>
           )}
-          {!owner && <p className="muted small">This document was shared publicly by another user. You can view and download it.</p>}
+          {!owner && (
+            <p className="muted small drawer__note">
+              <MessageSquareText size={15} /> Shared publicly by another user. You can ask questions about it and see
+              the cited passages; only the owner can download the file.
+            </p>
+          )}
         </div>
 
         <input
@@ -307,6 +381,29 @@ export default function DocumentDrawer({
         }
       >
         <p>This cannot be undone. The file, its search index and all related data will be removed.</p>
+      </Modal>
+
+      <Modal
+        open={confirmPublish}
+        title={`Publish ${current.filename}?`}
+        icon={<Globe size={20} />}
+        onClose={() => busy !== 'publish' && setConfirmPublish(false)}
+        closable={busy !== 'publish'}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirmPublish(false)} disabled={busy === 'publish'}>
+              Cancel
+            </Button>
+            <Button onClick={publish} loading={busy === 'publish'} loadingText="Publishing">
+              Publish
+            </Button>
+          </>
+        }
+      >
+        <p>
+          Every signed-in user will be able to ask questions about this document and see the cited passages; only you can
+          download the file. Your name is not shown. The private copy is replaced by the public one.
+        </p>
       </Modal>
 
       <RejectionDialog

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
-from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, ForeignKeyConstraint, CheckConstraint, Index, func, text
+from sqlalchemy import Boolean, String, Integer, Text, DateTime, ForeignKey, ForeignKeyConstraint, CheckConstraint, Index, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.db.base import Base
@@ -54,6 +54,13 @@ class Document(Base):
         String(20),
         default="private",
         server_default="private",
+        nullable=False
+    )
+    # Public landing page: an admin marks a public document as usable by guests (not signed in).
+    showcase: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=text("false"),
         nullable=False
     )
     # FR-012: NULL means "Uncategorized". The composite FK below guarantees the

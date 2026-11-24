@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 
@@ -15,8 +15,10 @@ from backend.app.api.deps import AdminUser, DbSession, require_roles
 from backend.app.api.v1 import users as users_api
 from backend.app.core.roles import UserRole
 from backend.app.models.audit import SecurityAuditLog
+from backend.app.models.document import Document
 from backend.app.models.role import Role
 from backend.app.models.user import User
+from backend.app.schemas.chat import ShowcaseUpdate
 from backend.app.schemas.user import RoleResponse, UserResponse, UserRoleUpdate
 from backend.app.services.audit_log import EVENT_TYPES
 
@@ -113,3 +115,27 @@ async def list_audit_log(
         limit=limit,
         offset=offset,
     )
+
+
+class ShowcaseResponse(BaseModel):
+    id: uuid.UUID
+    filename: str
+    showcase: bool
+
+
+@router.patch("/documents/{document_id}/showcase", response_model=ShowcaseResponse)
+async def set_document_showcase(
+    document_id: uuid.UUID, payload: ShowcaseUpdate, db: DbSession, current_admin: AdminUser
+) -> ShowcaseResponse:
+    """Landing page: mark a public, indexed document as usable by guests (or remove it).
+
+    Private documents are invisible to admins under RLS, so they are 404 like any missing document.
+    """
+    document = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
+    if document is None or document.visibility != "public":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    if payload.showcase and document.status != "indexed":
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Only indexed documents can be shown to guests.")
+    document.showcase = payload.showcase
+    await db.commit()
+    return ShowcaseResponse(id=document.id, filename=document.filename, showcase=document.showcase)

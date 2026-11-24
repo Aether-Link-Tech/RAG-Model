@@ -13,7 +13,9 @@ export default function AuthLayout() {
       <div className="auth-page__glow auth-page__glow--two" aria-hidden="true" />
 
       <header className="auth-header">
-        <Logo />
+        <Link to="/" aria-label="Aether Link home">
+          <Logo />
+        </Link>
         <Link to={isLogin ? '/signup' : '/login'} className="button button--glass">
           {isLogin ? 'Create account' : 'Sign in'}
           <ArrowRight size={17} className="button__arrow" />

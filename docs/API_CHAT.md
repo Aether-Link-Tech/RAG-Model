@@ -40,7 +40,8 @@ Requires `Authorization: Bearer <access token>`.
       "section": null,
       "source_type": "text",
       "text": "Data protection. Employees must report any suspected data incident…",
-      "score": 0.6448
+      "score": 0.6448,
+      "highlight": "Employees must report any suspected data incident within 24 hours."
     }
   ],
   "insufficient": false,
@@ -53,6 +54,8 @@ Requires `Authorization: Bearer <access token>`.
   Render `[n]` as a clickable tag that opens the passage (`text`) in the evidence inspector (FR-045).
 * `source_type` is `"ocr"` when the passage was read from an image.
 * `score` is similarity 0-1 (1 - cosine distance).
+* `highlight` is the sentence of `text` that supports the answer (the statements citing this source);
+  mark it inside the passage. `null` when no sentence matches.
 * `insufficient: true`: no relevant passage, or the model found no answer in them. `answer` is
   "The uploaded documents do not contain enough information to answer this question." and `sources` is empty (FR-032).
 * `uncertain: true`: weak or single-passage support; show the "Uncertain" badge with `uncertain_reason` (FR-046).
@@ -129,3 +132,29 @@ ignores the no-thinking switch. Any leaked reasoning (`<think>…</think>`) is s
 
 Conversation memory and saving turns (FR-037, Musaab: `save_turn()`), question rewriting (FR-029),
 stored citations (FR-043, Ahmed), hybrid search and the tuned relevance threshold (FR-024 / FR-027, Usman).
+
+## Public landing page: `POST /api/v1/public/ask` (no sign-in)
+
+Guests on `https://<host>/` ask questions over **showcase documents only**: public, indexed documents an
+admin selected (`PATCH /api/v1/admin/documents/{id}/showcase` with `{"showcase": true}`, admins only).
+
+* Request: `{"question": "..."}` (at most `PUBLIC_QUESTION_MAX_CHARS`, default 500). JSON only, no streaming,
+  no conversation, nothing stored.
+* Response: the same `ChatAnswer` shape, but each source `text` is an excerpt of at most
+  `PUBLIC_SOURCE_MAX_CHARS` (default 400) centred on `highlight`, and `claims[].chunk_id` is `null`.
+  No file, path, owner or download link is ever returned.
+* `GET /api/v1/public/documents` lists the showcase document names for the page.
+* Rate limit per client IP: `PUBLIC_ASK_PER_MINUTE` (5) and `PUBLIC_ASK_PER_DAY` (30); over the limit is
+  `429` with `Retry-After`. If Redis is down the endpoint fails closed (`503`).
+* Switch off with `PUBLIC_ASK_ENABLED=false` (both endpoints return `404`).
+
+Enforcement is in PostgreSQL, not only in code: guests run with `app.user_id` empty and
+`app.user_role = 'guest'`, and the only policy that matches is `documents_guest_select_policy`
+(public + showcase + indexed). A trigger lets only admins change `showcase`, and a CHECK keeps it on public
+documents only. ChromaDB is searched only inside the allowed document ids, and every hit is re-checked.
+
+## Ask-only access: downloads
+
+`GET /api/v1/documents/{id}/download` is **owner only**. Other users can ask about a public document and see
+the cited passages, but downloading it returns `404` (the same as a missing document) and is written to the
+audit log as `download_blocked`.

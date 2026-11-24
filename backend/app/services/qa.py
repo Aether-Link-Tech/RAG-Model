@@ -20,10 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.schemas.chat import ChatAnswer, ChatSource
-from backend.app.services import answer_confidence, answer_verification, grounded_prompt, llm, multi_doc, prompt_injection
+from backend.app.services import answer_confidence, answer_verification, grounded_prompt, llm, multi_doc, prompt_injection, source_highlight
 from backend.app.services.context_window import Passage, select_passages
 from backend.app.services.embedding import embed_query
-from backend.app.services.vector_store import RetrievedChunk, query_authorized_chunks
+from backend.app.services.vector_store import RetrievedChunk, query_authorized_chunks, query_showcase_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +72,21 @@ async def retrieve(
         include_public=include_public,
         include_private=include_private,
     )
+    return _relevant(hits)
+
+
+def _relevant(hits: Sequence[RetrievedChunk]) -> list[Passage]:
     relevant = [h for h in hits if h.distance < settings.QA_MAX_DISTANCE and (h.document or "").strip()]
     return [_to_passage(h) for h in relevant]
+
+
+async def prepare_showcase(db: AsyncSession, question: str) -> PreparedQuestion:
+    """Landing page guests: the same pipeline, but retrieval only from showcase documents.
+    `db` must carry the guest RLS context."""
+    fetch = settings.QA_MULTIDOC_FETCH if multi_doc.is_comparison(question) else settings.QA_RETRIEVAL_K
+    vector = await embed_query(question)
+    hits = await query_showcase_chunks(db=db, query_embedding=vector, n_results=fetch)
+    return prepare_from_passages(question, _relevant(hits))
 
 
 async def prepare(
@@ -311,7 +324,7 @@ def _updated(result: ChatAnswer, **changes) -> ChatAnswer:
 async def answer(prepared: PreparedQuestion) -> ChatAnswer:
     if not prepared.messages:
         return insufficient_answer(prepared)
-    return await complete_answer(prepared, await llm.complete(prepared.messages))
+    return source_highlight.with_highlights(await complete_answer(prepared, await llm.complete(prepared.messages)))
 
 
 async def stream_answer(prepared: PreparedQuestion) -> AsyncIterator[tuple[str, object]]:
@@ -347,7 +360,7 @@ async def stream_answer(prepared: PreparedQuestion) -> AsyncIterator[tuple[str, 
         deciding = False
         yield "token", pending
     # The final answer is authoritative (clients replace the streamed text with it).
-    yield "done", await complete_answer(prepared, "".join(pieces))
+    yield "done", source_highlight.with_highlights(await complete_answer(prepared, "".join(pieces)))
 
 
 def sources_preview(passages: Sequence[Passage]) -> list[ChatSource]:

@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from backend.app.db import chroma
 from backend.app.scripts import integrity_check as cli
-from backend.app.services.document_ingest import user_storage_dir
+from backend.app.services.document_ingest import public_storage_dir, user_storage_dir
 from backend.app.services.integrity_check import CRITICAL, DocumentRecord, check_integrity, owner_folders
 from backend.app.services.vector_store import upsert_chunks
 
@@ -22,7 +22,7 @@ EMB = [[0.1, 0.2, 0.3]]
 
 def _doc(upload_dir, user_id, visibility="private", status="indexed", *, write_file=True, name=None):
     doc_id = uuid.uuid4()
-    folder = user_storage_dir(user_id)  # current layout: <UPLOAD_DIR>/users/<id>/documents
+    folder = public_storage_dir() if visibility == "public" else user_storage_dir(user_id)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / (name or f"{doc_id}.txt")
     if write_file:
@@ -220,3 +220,24 @@ def test_extracted_images_are_not_orphan_files(world):
     (stale / "0.png").write_bytes(b"png")
     report = check_integrity(world["docs"], chroma_client=world["client"], upload_dir=world["dir"])
     assert [Path(i.path).parent.name for i in report.by_kind("orphan_file")] == [stale.name]
+
+
+def test_detects_public_file_in_user_folder(world):
+    a_folder = user_storage_dir(world["a"])
+    misplaced_path = a_folder / "public-in-user-dir.txt"
+    misplaced_path.write_text("content")
+    misplaced = DocumentRecord(uuid.uuid4(), world["a"], "public", "pending", str(misplaced_path))
+    report = check_integrity(world["docs"] + [misplaced], chroma_client=world["client"], upload_dir=world["dir"])
+    outside = report.by_kind("file_outside_owner_folder")
+    assert [i.document_id for i in outside] == [str(misplaced.id)]
+    assert outside[0].severity == CRITICAL
+
+
+def test_public_extracted_images_are_not_orphan_files(world):
+    public_doc = world["docs"][1]
+    assert public_doc.visibility == "public"
+    pub_images = public_storage_dir() / "images" / str(public_doc.id)
+    pub_images.mkdir(parents=True)
+    (pub_images / "0.png").write_bytes(b"png")
+    report = check_integrity(world["docs"], chroma_client=world["client"], upload_dir=world["dir"])
+    assert report.issues == []

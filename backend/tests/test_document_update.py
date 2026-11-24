@@ -119,7 +119,7 @@ async def test_replacement_uses_upload_validation(async_client, test_user: User,
 async def test_infected_replacement_is_blocked_and_original_kept(async_client, test_user: User, reindex_calls, monkeypatch):
     doc = await _upload(async_client, test_user, b"clean original")
 
-    def infected(path, user_id, document_id):
+    def infected(path, user_id, document_id, **_kwargs):
         raise clamav.InfectedFileError("Eicar-Test-Signature")
 
     monkeypatch.setattr(documents_api, "scan_and_quarantine", infected)

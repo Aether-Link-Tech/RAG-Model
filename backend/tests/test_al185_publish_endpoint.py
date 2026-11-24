@@ -380,3 +380,29 @@ async def test_success_response_exposes_user_id_only_to_the_owner(
     ok = await _publish(async_client, test_user, doc["id"])
     assert ok.status_code == 201, ok.text
     assert ok.json()["user_id"] == str(test_user.id)
+
+
+@pytest.mark.asyncio
+async def test_published_file_is_stored_in_shared_public_directory(
+    async_client, db_session, test_user: User
+):
+    """AL-101 Option A: publishing writes the file into <UPLOAD_DIR>/public/documents/, not users/<id>/."""
+    from pathlib import Path
+    from backend.app.services.storage_paths import public_storage_dir, user_storage_dir
+
+    doc = await _upload(async_client, test_user, _content())
+    old_row = await _row(db_session, test_user, doc["id"])
+    assert old_row is not None
+    old_path = Path(old_row.file_path).resolve()
+    assert old_path.is_relative_to(user_storage_dir(test_user.id).resolve())
+
+    res = await _publish(async_client, test_user, doc["id"])
+    assert res.status_code == 201, res.text
+    new_id = res.json()["id"]
+
+    new_row = await _row(db_session, test_user, new_id)
+    assert new_row is not None
+    new_path = Path(new_row.file_path).resolve()
+    assert new_path.parent == public_storage_dir().resolve()
+    assert new_path.is_file()
+    assert not old_path.exists()

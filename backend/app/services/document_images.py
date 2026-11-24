@@ -28,10 +28,11 @@ from backend.app.models.document_image import DocumentImage
 from backend.app.services import audit_log
 from backend.app.services.ocr import OCRFailure, get_ocr_client
 from backend.app.services.storage_paths import (
+    StorageVisibility,
     UnsafeStoragePathError,
     _assert_contained,
     _check_no_symlinks,
-    user_storage_dir,
+    document_storage_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,11 +51,20 @@ class ImageOCR:
     error: Optional[str] = None
 
 
-def image_folder(user_id: uuid.UUID, document_id: uuid.UUID) -> Path:
-    """Inside the owner's storage namespace (AL-139), one folder per document."""
+def _doc_visibility(document: Document) -> StorageVisibility:
+    return "public" if document.visibility == "public" else "private"
+
+
+def image_folder(
+    user_id: uuid.UUID,
+    document_id: uuid.UUID,
+    *,
+    visibility: StorageVisibility = "private",
+) -> Path:
+    """One folder per document inside the private owner or shared public storage namespace."""
     owner_id = uuid.UUID(str(user_id))
     doc_id = uuid.UUID(str(document_id))
-    base = user_storage_dir(owner_id)
+    base = document_storage_dir(owner_id, visibility=visibility)
     _check_no_symlinks(base, ("images", str(doc_id)))
     folder = base / "images" / str(doc_id)
     _assert_contained(folder, base)
@@ -77,8 +87,13 @@ def _safe_rmtree_fd(dir_fd: int) -> None:
                 os.rmdir(entry.name, dir_fd=dir_fd)
 
 
-def remove_image_files(user_id: uuid.UUID, document_id: uuid.UUID) -> None:
-    folder = image_folder(user_id, document_id)
+def remove_image_files(
+    user_id: uuid.UUID,
+    document_id: uuid.UUID,
+    *,
+    visibility: StorageVisibility = "private",
+) -> None:
+    folder = image_folder(user_id, document_id, visibility=visibility)
     dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         dir_fd = os.open(folder, dir_flags)
@@ -106,7 +121,7 @@ def remove_image_files(user_id: uuid.UUID, document_id: uuid.UUID) -> None:
 async def clear_document_images(db: AsyncSession, document: Document) -> None:
     """Remove a document's previous images (rows and files), e.g. before a re-index."""
     await db.execute(delete(DocumentImage).where(DocumentImage.document_id == document.id))
-    remove_image_files(document.user_id, document.id)
+    remove_image_files(document.user_id, document.id, visibility=_doc_visibility(document))
 
 
 async def _audit_skip(document: Document, image: ImageOCR) -> None:
@@ -123,9 +138,10 @@ async def _audit_skip(document: Document, image: ImageOCR) -> None:
 
 async def process_document_images(db: AsyncSession, document: Document, layout: dict) -> dict[int, ImageOCR]:
     """Save every layout image, OCR them and return results keyed by image index."""
-    folder = image_folder(document.user_id, document.id)
+    visibility = _doc_visibility(document)
+    folder = image_folder(document.user_id, document.id, visibility=visibility)
     folder.mkdir(parents=True, exist_ok=True)
-    folder = image_folder(document.user_id, document.id)
+    folder = image_folder(document.user_id, document.id, visibility=visibility)
     resolved_folder = folder.resolve()
     results: dict[int, ImageOCR] = {}
     rows: dict[int, DocumentImage] = {}

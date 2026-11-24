@@ -19,8 +19,11 @@ from typing import Optional
 
 from backend.app.core.config import settings
 from backend.app.services.storage_paths import (
+    StorageVisibility,
     UnsafeStoragePathError,
+    open_public_file_no_follow,
     open_user_file_no_follow,
+    resolve_public_file_path,
     resolve_user_file_path,
     validate_safe_filename,
 )
@@ -289,13 +292,17 @@ def _validate_parser_input_path(
     file_path: str | Path,
     filename: str,
     owner_id: Optional[uuid.UUID | str] = None,
+    *,
+    visibility: StorageVisibility = "private",
 ) -> tuple[Path, str]:
-    """Validate parser input path (and owner containment when ``owner_id`` is given)."""
+    """Validate parser input path (and namespace containment when ``owner_id`` or public visibility is given)."""
     raw = str(file_path)
     if "\x00" in raw:
         raise UnsafeStoragePathError("Parser input path contains NUL byte.")
 
-    if owner_id is not None:
+    if visibility == "public":
+        resolved = resolve_public_file_path(raw, must_exist=False)
+    elif owner_id is not None:
         resolved = resolve_user_file_path(owner_id, raw, must_exist=False)
     else:
         env_normalized = (settings.ENV or "").lower().strip()
@@ -320,12 +327,15 @@ def _start_stdin_feeder(
     path: Path,
     *,
     owner_id: Optional[uuid.UUID | str] = None,
+    visibility: StorageVisibility = "private",
 ) -> None:
     """Stream the document into the sandbox's stdin from a background thread."""
 
     def _feed() -> None:
         try:
-            if owner_id is not None:
+            if visibility == "public":
+                source = open_public_file_no_follow(path)
+            elif owner_id is not None:
                 source = open_user_file_no_follow(owner_id, path)
             else:
                 flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -357,6 +367,7 @@ def extract_text_sandboxed(
     filename: str,
     *,
     owner_id: Optional[uuid.UUID | str] = None,
+    visibility: StorageVisibility = "private",
     timeout_seconds: Optional[int] = None,
     docker_image: Optional[str] = None,
     memory_limit: Optional[str] = None,
@@ -367,7 +378,7 @@ def extract_text_sandboxed(
 ) -> str:
     """Execute text extraction inside an isolated Docker container with resource limits."""
     resolved_path, safe_name = _validate_parser_input_path(
-        file_path, filename, owner_id=owner_id
+        file_path, filename, owner_id=owner_id, visibility=visibility
     )
     if not resolved_path.exists() or not resolved_path.is_file():
         raise ParserSandboxError(f"Document file does not exist: {resolved_path.name}")
@@ -407,7 +418,9 @@ def extract_text_sandboxed(
             stderr=subprocess.PIPE,
         )
         if use_stdin:
-            _start_stdin_feeder(proc, resolved_path, owner_id=owner_id)
+            _start_stdin_feeder(
+                proc, resolved_path, owner_id=owner_id, visibility=visibility
+            )
         stdout, stderr = _communicate_with_limits(
             proc=proc,
             max_output_bytes=max_bytes,
@@ -519,6 +532,7 @@ def extract_text(
     filename: str,
     *,
     owner_id: Optional[uuid.UUID | str] = None,
+    visibility: StorageVisibility = "private",
     cancel_event: Optional[threading.Event] = None,
     max_output_bytes: Optional[int] = None,
 ) -> str:
@@ -531,7 +545,9 @@ def extract_text(
     In-process parsing is permitted only when `PARSER_SANDBOX_ENABLED` is
     explicitly False (for unit testing environments without Docker).
     """
-    resolved_path, _ = _validate_parser_input_path(file_path, filename, owner_id=owner_id)
+    resolved_path, _ = _validate_parser_input_path(
+        file_path, filename, owner_id=owner_id, visibility=visibility
+    )
     suffix = resolved_path.suffix.lower() or Path(filename).suffix.lower()
 
     if not _is_supported_suffix(suffix, mime_type):
@@ -545,6 +561,7 @@ def extract_text(
             mime_type,
             filename,
             owner_id=owner_id,
+            visibility=visibility,
             cancel_event=cancel_event,
             max_output_bytes=max_output_bytes,
         )
@@ -597,6 +614,7 @@ def extract_layout(
     filename: str,
     *,
     owner_id: Optional[uuid.UUID | str] = None,
+    visibility: StorageVisibility = "private",
     cancel_event: Optional[threading.Event] = None,
 ) -> dict:
     """Text blocks and embedded images in reading order (see docker/parser/runner.py).
@@ -607,7 +625,9 @@ def extract_layout(
     """
     import json
 
-    resolved_path, _ = _validate_parser_input_path(file_path, filename, owner_id=owner_id)
+    resolved_path, _ = _validate_parser_input_path(
+        file_path, filename, owner_id=owner_id, visibility=visibility
+    )
     suffix = resolved_path.suffix.lower() or Path(filename).suffix.lower()
     if not _is_supported_suffix(suffix, mime_type):
         raise UnsupportedDocumentError("Only PDF, DOCX, and TXT files can be indexed in this sprint")
@@ -618,6 +638,7 @@ def extract_layout(
             mime_type,
             filename,
             owner_id=owner_id,
+            visibility=visibility,
             cancel_event=cancel_event,
             max_output_bytes=settings.PARSER_LAYOUT_MAX_OUTPUT_BYTES,
             parser_mode="layout",

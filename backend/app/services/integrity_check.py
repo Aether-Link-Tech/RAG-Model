@@ -31,6 +31,8 @@ from backend.app.core.config import settings
 from backend.app.db import chroma
 from backend.app.services.storage_paths import (
     UnsafeStoragePathError,
+    public_storage_dir,
+    resolve_public_file_path,
     resolve_user_file_path,
     user_storage_dir,
 )
@@ -206,12 +208,19 @@ def _check_vectors(report: Report, docs: dict[uuid.UUID, DocumentRecord], client
 
 
 def _is_document_image(path: Path, root: Path, docs: dict[uuid.UUID, DocumentRecord]) -> bool:
-    """Extracted images (FR-058) live in <owner folder>/images/<document_id>/ of an existing document."""
+    """Extracted images (FR-058) live in <namespace folder>/images/<document_id>/ of an existing document."""
     doc_id = _uuid_or_none(path.parent.name)
     doc = docs.get(doc_id) if doc_id else None
     if doc is None:
         return False
-    expected = (owner_folders(root, doc.user_id)[0] / "images" / str(doc.id)).resolve()
+    if doc.visibility == "public":
+        try:
+            base = public_storage_dir(base_dir=root, create=False)
+        except UnsafeStoragePathError:
+            base = root / "public" / "documents"
+    else:
+        base = owner_folders(root, doc.user_id)[0]
+    expected = (base / "images" / str(doc.id)).resolve()
     return path.parent == expected
 
 
@@ -244,22 +253,35 @@ def _check_files(report: Report, docs: dict[uuid.UUID, DocumentRecord], upload_d
     referenced: set[Path] = set()
     for doc in docs.values():
         raw_path = doc.file_path or ""
-        try:
-            resolved = resolve_user_file_path(
-                doc.user_id, raw_path, base_dir=root, must_exist=False
-            )
-            in_owner_folder = True
-        except UnsafeStoragePathError:
-            in_owner_folder = _is_valid_legacy_owner_path(raw_path, root, doc.user_id)
-            resolved = Path(raw_path).resolve() if raw_path and "\x00" not in raw_path else None
+        if doc.visibility == "public":
+            try:
+                resolved = resolve_public_file_path(raw_path, base_dir=root, must_exist=False)
+                in_expected_folder = True
+            except UnsafeStoragePathError:
+                in_expected_folder = False
+                resolved = Path(raw_path).resolve() if raw_path and "\x00" not in raw_path else None
+        else:
+            try:
+                resolved = resolve_user_file_path(
+                    doc.user_id, raw_path, base_dir=root, must_exist=False
+                )
+                in_expected_folder = True
+            except UnsafeStoragePathError:
+                in_expected_folder = _is_valid_legacy_owner_path(raw_path, root, doc.user_id)
+                resolved = Path(raw_path).resolve() if raw_path and "\x00" not in raw_path else None
 
         if resolved is not None:
             referenced.add(resolved)
-        if not in_owner_folder:
+        if not in_expected_folder:
+            detail = (
+                "Public document file is not inside the shared public folder"
+                if doc.visibility == "public"
+                else "Document file is not inside its owner's folder"
+            )
             report.issues.append(
                 Issue(
                     "file_outside_owner_folder",
-                    "Document file is not inside its owner's folder",
+                    detail,
                     document_id=str(doc.id),
                     path=str(resolved if resolved is not None else raw_path),
                 )

@@ -14,6 +14,7 @@ vi.mock('../services/documentService', () => ({
   downloadDocument: vi.fn(),
   renameDocument: vi.fn(),
   replaceDocument: vi.fn(),
+  publishDocument: vi.fn(),
 }));
 vi.mock('../services/authService', () => ({
   login: vi.fn(),
@@ -148,5 +149,25 @@ describe('documents page', () => {
     await userEvent.click(screen.getByRole('button', { name: /upload document/i }));
     await waitFor(() => expect(screen.getAllByTestId('doc-row')).toHaveLength(4));
     expect(vi.mocked(docs.uploadDocument).mock.calls[0][1]).toBe('public');
+  });
+  it('publishes a private document only after confirmation (FR-082)', async () => {
+    vi.mocked(docs.publishDocument).mockResolvedValue(doc({ id: 'a2', filename: 'Annual report.pdf', visibility: 'public' }));
+    renderAt('/documents');
+    await userEvent.click((await screen.findAllByTestId('doc-row'))[0]);
+    await userEvent.click(await screen.findByRole('button', { name: /publish to everyone/i }));
+    const confirm = await screen.findByRole('dialog', { name: /publish annual report\.pdf\?/i });
+    expect(docs.publishDocument).not.toHaveBeenCalled();
+    await userEvent.click(within(confirm).getByRole('button', { name: /^publish$/i }));
+    await waitFor(() => expect(docs.publishDocument).toHaveBeenCalledWith('a'));
+    // the private row is replaced by the new public one
+    await waitFor(() => expect(screen.getAllByTestId('doc-row')).toHaveLength(3));
+    expect(screen.getByTestId('stat-Public')).toHaveTextContent('2');
+  });
+
+  it('does not offer publishing for documents that are not indexed', async () => {
+    renderAt('/documents');
+    await userEvent.click((await screen.findAllByTestId('doc-row'))[2]);
+    const drawer = await screen.findByRole('dialog', { name: /notes\.txt/i });
+    expect(within(drawer).getByRole('button', { name: /publish to everyone/i })).toBeDisabled();
   });
 });

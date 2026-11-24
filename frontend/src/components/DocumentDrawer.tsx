@@ -1,5 +1,6 @@
 // Side panel for one document: details (FR-009), download (owner only), rename/replace (FR-010),
-// delete with confirmation (FR-011), and for admins the landing-page showcase switch.
+// delete with confirmation (FR-011), publish a private document to everyone (FR-082),
+// and for admins the landing-page showcase switch.
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, FilePen, Globe, MessageSquareText, RefreshCcw, Trash2, TriangleAlert, X } from 'lucide-react';
@@ -13,6 +14,7 @@ import { precheck } from './UploadPanel';
 import {
   deleteDocument,
   downloadDocument,
+  publishDocument,
   renameDocument,
   replaceDocument,
 } from '../services/documentService';
@@ -32,6 +34,8 @@ interface Props {
   onChanged: (doc: Document) => void;
   onMoved?: (doc: Document) => void;
   onDeleted: (id: string) => void;
+  /** Publishing replaces the private document with a new public one (new id). */
+  onPublished?: (oldId: string, doc: Document) => void;
 }
 
 export default function DocumentDrawer({
@@ -42,12 +46,14 @@ export default function DocumentDrawer({
   onChanged,
   onMoved,
   onDeleted,
+  onPublished,
 }: Props) {
   const toast = useToast();
   const replaceInput = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState('');
-  const [busy, setBusy] = useState<null | 'download' | 'rename' | 'replace' | 'delete' | 'move' | 'showcase'>(null);
+  const [busy, setBusy] = useState<null | 'download' | 'rename' | 'replace' | 'delete' | 'move' | 'publish' | 'showcase'>(null);
+  const [confirmPublish, setConfirmPublish] = useState(false);
   const { user } = useSession();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [rejection, setRejection] = useState<(UploadRejection & { filename: string }) | null>(null);
@@ -55,19 +61,22 @@ export default function DocumentDrawer({
   useEffect(() => {
     setRenaming(false);
     setConfirmDelete(false);
+    setConfirmPublish(false);
     setName(doc?.filename ?? '');
   }, [doc?.id]);
 
   useEffect(() => {
     if (!doc) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !confirmDelete && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !confirmDelete && !confirmPublish && onClose();
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [doc, confirmDelete, onClose]);
+  }, [doc, confirmDelete, confirmPublish, onClose]);
 
   if (!doc) return null;
   const current = doc;
   const owner = current.is_owner;
+  const canPublish = owner && current.visibility === 'private';
+  const publishReady = current.status === 'indexed';
   const isAdmin = user?.role === 'admin';
 
   async function move(collectionId: string | null) {
@@ -149,6 +158,21 @@ export default function DocumentDrawer({
       toast.success('File replaced', 'Re-indexing in the background.');
     } catch (error) {
       setRejection({ ...describeUploadError(error), filename: file.name });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function publish() {
+    setBusy('publish');
+    try {
+      const published = await publishDocument(current.id);
+      setConfirmPublish(false);
+      (onPublished ?? ((_: string, d: Document) => onChanged(d)))(current.id, published);
+      if (published.warning) toast.info('Published with a warning', published.warning);
+      else toast.success('Published', `${published.filename} is now shared with everyone.`);
+    } catch (error) {
+      toast.error('Publish failed', getErrorMessage(error));
     } finally {
       setBusy(null);
     }
@@ -301,6 +325,17 @@ export default function DocumentDrawer({
               </Button>
             </div>
           )}
+          {canPublish && (
+            <Button
+              variant="ghost"
+              wide
+              onClick={() => setConfirmPublish(true)}
+              disabled={busy !== null || !publishReady}
+              title={publishReady ? 'Share this document with every user' : 'Available once the document is indexed'}
+            >
+              <Globe size={16} /> Publish to everyone
+            </Button>
+          )}
           {canDelete && (
             <Button variant="danger" wide onClick={() => setConfirmDelete(true)} disabled={busy !== null}>
               <Trash2 size={16} /> Delete document
@@ -346,6 +381,29 @@ export default function DocumentDrawer({
         }
       >
         <p>This cannot be undone. The file, its search index and all related data will be removed.</p>
+      </Modal>
+
+      <Modal
+        open={confirmPublish}
+        title={`Publish ${current.filename}?`}
+        icon={<Globe size={20} />}
+        onClose={() => busy !== 'publish' && setConfirmPublish(false)}
+        closable={busy !== 'publish'}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirmPublish(false)} disabled={busy === 'publish'}>
+              Cancel
+            </Button>
+            <Button onClick={publish} loading={busy === 'publish'} loadingText="Publishing">
+              Publish
+            </Button>
+          </>
+        }
+      >
+        <p>
+          Every signed-in user will be able to ask questions about this document and see the cited passages; only you can
+          download the file. Your name is not shown. The private copy is replaced by the public one.
+        </p>
       </Modal>
 
       <RejectionDialog

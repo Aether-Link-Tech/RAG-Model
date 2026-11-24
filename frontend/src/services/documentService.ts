@@ -99,6 +99,22 @@ export async function deleteDocument(id: string): Promise<void> {
   await api.delete(`/documents/${id}`);
 }
 
+// POST /documents/{id}/publish (FR-082 / AL-185): owner only, indexed private documents.
+// The backend copies the document to the shared pool and removes the private one, so the
+// response is a NEW public document with a NEW id. 404 not yours, 409 already public /
+// duplicate public content / not indexed yet. `warning` = published, but cleanup failed.
+export async function publishDocument(id: string): Promise<Document & { warning?: string | null }> {
+  if (USE_MOCK) {
+    await wait(700);
+    const index = mockDocuments.findIndex((d) => d.id === id);
+    const published: Document = { ...mockDocuments[index], id: crypto.randomUUID(), visibility: 'public', updated_at: new Date().toISOString() };
+    mockDocuments.splice(index, 1, published);
+    return published;
+  }
+  const { data } = await api.post<Document & { warning?: string | null }>(`/documents/${id}/publish`);
+  return data;
+}
+
 // Streams the original file and triggers a browser download (no public URL is exposed).
 export async function downloadDocument(doc: Document): Promise<void> {
   if (USE_MOCK) {

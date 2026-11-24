@@ -119,6 +119,14 @@ class Settings(BaseConfig):
     # Calibrated on nomic-embed-text: correct single-passage answers scored 0.64-0.72 similarity.
     QA_UNCERTAIN_MAX_DISTANCE: float = float(os.getenv("QA_UNCERTAIN_MAX_DISTANCE", "0.5"))
 
+    # Public landing page Q&A: guests ask questions over admin-approved showcase documents only.
+    PUBLIC_ASK_ENABLED: bool = os.getenv("PUBLIC_ASK_ENABLED", "True").lower() in ("true", "1")
+    PUBLIC_ASK_PER_MINUTE: int = int(os.getenv("PUBLIC_ASK_PER_MINUTE", "5"))
+    PUBLIC_ASK_PER_DAY: int = int(os.getenv("PUBLIC_ASK_PER_DAY", "30"))
+    PUBLIC_QUESTION_MAX_CHARS: int = int(os.getenv("PUBLIC_QUESTION_MAX_CHARS", "500"))
+    # Guests see an excerpt around the highlighted sentence, never a whole chunk (no document rebuild).
+    PUBLIC_SOURCE_MAX_CHARS: int = int(os.getenv("PUBLIC_SOURCE_MAX_CHARS", "400"))
+
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", DEFAULT_DEV_SECRET_KEY)
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")

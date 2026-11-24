@@ -1,8 +1,8 @@
-// Side panel for one document: details (FR-009), download, rename/replace (FR-010),
-// delete with confirmation (FR-011).
+// Side panel for one document: details (FR-009), download (owner only), rename/replace (FR-010),
+// delete with confirmation (FR-011), and for admins the landing-page showcase switch.
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, FilePen, RefreshCcw, Trash2, TriangleAlert, X } from 'lucide-react';
+import { Download, FilePen, Globe, MessageSquareText, RefreshCcw, Trash2, TriangleAlert, X } from 'lucide-react';
 import Button from './Button';
 import FileIcon from './FileIcon';
 import Modal from './Modal';
@@ -17,6 +17,8 @@ import {
   replaceDocument,
 } from '../services/documentService';
 import { moveDocument } from '../services/collectionService';
+import { setShowcase } from '../services/adminService';
+import { useSession } from '../hooks/useSession';
 import { getErrorMessage, hasStatus } from '../services/api';
 import { describeUploadError, type UploadRejection } from '../utils/uploadErrors';
 import { extensionOf, formatBytes, formatDate } from '../utils/format';
@@ -45,7 +47,8 @@ export default function DocumentDrawer({
   const replaceInput = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState('');
-  const [busy, setBusy] = useState<null | 'download' | 'rename' | 'replace' | 'delete' | 'move'>(null);
+  const [busy, setBusy] = useState<null | 'download' | 'rename' | 'replace' | 'delete' | 'move' | 'showcase'>(null);
+  const { user } = useSession();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [rejection, setRejection] = useState<(UploadRejection & { filename: string }) | null>(null);
 
@@ -65,6 +68,7 @@ export default function DocumentDrawer({
   if (!doc) return null;
   const current = doc;
   const owner = current.is_owner;
+  const isAdmin = user?.role === 'admin';
 
   async function move(collectionId: string | null) {
     if (!doc) return;
@@ -87,6 +91,22 @@ export default function DocumentDrawer({
       await downloadDocument(current);
     } catch (error) {
       toast.error('Download failed', hasStatus(error, 404) ? 'The file is no longer available.' : getErrorMessage(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function toggleShowcase() {
+    setBusy('showcase');
+    try {
+      const result = await setShowcase(current.id, !current.showcase);
+      onChanged({ ...current, showcase: result.showcase });
+      toast.success(
+        result.showcase ? 'Shown on the landing page' : 'Removed from the landing page',
+        result.showcase ? 'Guests can now ask questions about this document.' : current.filename,
+      );
+    } catch (error) {
+      toast.error('Could not change landing page access', getErrorMessage(error));
     } finally {
       setBusy(null);
     }
@@ -249,9 +269,23 @@ export default function DocumentDrawer({
         </dl>
 
         <div className="drawer__actions">
-          <Button wide onClick={download} loading={busy === 'download'} loadingText="Preparing download">
-            <Download size={17} /> Download
-          </Button>
+          {owner && (
+            <Button wide onClick={download} loading={busy === 'download'} loadingText="Preparing download">
+              <Download size={17} /> Download
+            </Button>
+          )}
+          {isAdmin && current.visibility === 'public' && current.status === 'indexed' && (
+            <Button
+              variant="ghost"
+              wide
+              onClick={toggleShowcase}
+              loading={busy === 'showcase'}
+              loadingText="Saving"
+              disabled={busy !== null && busy !== 'showcase'}
+            >
+              <Globe size={16} /> {current.showcase ? 'Remove from landing page' : 'Show on landing page'}
+            </Button>
+          )}
           {owner && (
             <div className="drawer__row">
               <Button variant="ghost" onClick={() => setRenaming(true)} disabled={busy !== null || renaming}>
@@ -272,7 +306,12 @@ export default function DocumentDrawer({
               <Trash2 size={16} /> Delete document
             </Button>
           )}
-          {!owner && <p className="muted small">This document was shared publicly by another user. You can view and download it.</p>}
+          {!owner && (
+            <p className="muted small drawer__note">
+              <MessageSquareText size={15} /> Shared publicly by another user. You can ask questions about it and see
+              the cited passages; only the owner can download the file.
+            </p>
+          )}
         </div>
 
         <input

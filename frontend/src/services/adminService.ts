@@ -20,3 +20,12 @@ export async function fetchAuditLog({ eventType, q, since, until, limit = 25, of
   const { data } = await api.get<AuditLogPage>('/admin/audit-log', { params });
   return data;
 }
+
+// Landing page: admins choose which public documents guests can ask about.
+export async function setShowcase(documentId: string, showcase: boolean): Promise<{ id: string; showcase: boolean }> {
+  const { data } = await api.patch<{ id: string; filename: string; showcase: boolean }>(
+    `/admin/documents/${documentId}/showcase`,
+    { showcase },
+  );
+  return data;
+}

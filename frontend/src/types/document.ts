@@ -11,6 +11,7 @@ export interface Document {
   file_hash: string;
   status: DocumentStatus;
   visibility: DocumentVisibility;
+  showcase?: boolean; // admin made this public document available on the landing page
   is_owner: boolean;
   user_id: string | null; // null for other users' public documents (privacy)
   collection_id?: string | null; // owner's collection (FR-012); null = Uncategorized

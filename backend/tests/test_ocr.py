@@ -433,9 +433,9 @@ async def test_publishing_moves_extracted_images_to_the_public_copy(async_client
 
     images = await _images_for(test_user, public_id)
     assert [i.ocr_status for i in images] == ["done", "done"]
-    new_folder = image_folder(test_user.id, uuid.UUID(public_id))
+    new_folder = image_folder(test_user.id, uuid.UUID(public_id), visibility="public")
     assert all(Path(i.file_path).parent == new_folder and Path(i.file_path).exists() for i in images)
-    assert not image_folder(test_user.id, uuid.UUID(private_id)).exists()  # nothing left behind
+    assert not image_folder(test_user.id, uuid.UUID(private_id), visibility="private").exists()  # nothing left behind
 
 
 # --- AL-241: offline-first model loading -------------------------------------------------

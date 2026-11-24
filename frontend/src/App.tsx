@@ -7,6 +7,8 @@ import LoginPage from './pages/login';
 import DocumentsPage from './pages/documents';
 import VerifyEmailPage from './pages/verify-email';
 import AuditLogPage from './pages/audit-log';
+import ChatPage from './pages/chat';
+import LandingPage from './pages/landing';
 import { GuestOnly, RequireAdmin, RequireAuth } from './routes/guards';
 import { ToastProvider, useToast } from './components/Toast';
 
@@ -30,6 +32,9 @@ export function AppRoutes() {
     <>
       <SessionWatcher />
       <Routes>
+        {/* Public landing page: about the project + guest questions over showcase documents. */}
+        <Route path="/" element={<LandingPage />} />
+
         <Route
           element={
             <GuestOnly>
@@ -54,6 +59,7 @@ export function AppRoutes() {
           }
         >
           <Route path="/documents" element={<DocumentsPage />} />
+          <Route path="/chat" element={<ChatPage />} />
           <Route
             path="/admin/audit"
             element={

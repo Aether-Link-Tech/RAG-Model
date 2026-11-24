@@ -175,13 +175,15 @@ def test_task_cleans_up_and_audits_near_duplicate(
     monkeypatch.setattr(document_tasks, "index_document", reject_duplicate)
     monkeypatch.setattr(
         document_tasks,
-        "resolve_user_file_path",
-        lambda owner_id, stored_path, must_exist=False: Path(stored_path),
+        "resolve_document_file_path",
+        lambda owner_id, stored_path, visibility, must_exist=False: Path(stored_path),
     )
     monkeypatch.setattr(
         document_tasks,
         "remove_image_files",
-        lambda owner_id, doc_id: cleanup_calls.append(("images", owner_id, doc_id)),
+        lambda owner_id, doc_id, visibility: cleanup_calls.append(
+            ("images", owner_id, doc_id)
+        ),
     )
     monkeypatch.setattr(
         document_tasks,

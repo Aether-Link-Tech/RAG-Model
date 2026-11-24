@@ -23,7 +23,7 @@ from backend.app.services.document_parser import (
 from backend.app.services.embedding import EmbeddingError, embed_texts
 from backend.app.services import near_duplicate
 from backend.app.services.near_duplicate import NearDuplicateError
-from backend.app.services.document_images import clear_document_images, process_document_images, remove_image_files
+from backend.app.services.document_images import clear_document_images, process_document_images
 from backend.app.services.ocr_merge import chunks_from_segments, merge_layout, merged_text
 from backend.app.services.vector_store import (
     Visibility,
@@ -62,8 +62,14 @@ async def _extract_document_content(
     document: Document,
     cancel_event: threading.Event,
 ) -> tuple[str, list | None]:
+    doc_visibility: Visibility = "public" if document.visibility == "public" else "private"
     safe_file_path = str(
-        resolve_user_file_path(document.user_id, document.file_path, must_exist=True)
+        resolve_document_file_path(
+            document.user_id,
+            document.file_path,
+            visibility=doc_visibility,
+            must_exist=True,
+        )
     )
     text = await asyncio.to_thread(
         extract_text,
@@ -71,6 +77,7 @@ async def _extract_document_content(
         document.mime_type,
         document.filename,
         owner_id=document.user_id,
+        visibility=doc_visibility,
         cancel_event=cancel_event,
     )
     segments = None
@@ -82,6 +89,7 @@ async def _extract_document_content(
             document.mime_type,
             document.filename,
             owner_id=document.user_id,
+            visibility=doc_visibility,
             cancel_event=cancel_event,
         )
         if layout.get("images"):
@@ -107,8 +115,13 @@ async def check_document_for_near_duplicate(
 async def index_document(db: AsyncSession, document: Document) -> Document:
     # Captured up front: a rollback expires ORM attributes, which must not lazy-load later.
     owner_id, document_id = document.user_id, document.id
-    # Fail closed before any DB or file operation if the stored path leaves owner_id's namespace.
-    safe_file_path = str(resolve_user_file_path(owner_id, document.file_path, must_exist=False))
+    doc_visibility: Visibility = "public" if document.visibility == "public" else "private"
+    # Fail closed before any DB or file operation if the stored path leaves its allowed namespace.
+    safe_file_path = str(
+        resolve_document_file_path(
+            owner_id, document.file_path, visibility=doc_visibility, must_exist=False
+        )
+    )
     document.status = "processing"
     document.error_message = None
     await db.commit()
@@ -169,7 +182,13 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
     except NearDuplicateError as exc:
         logger.exception("Document indexing rejected as near-duplicate")
         await db.rollback()
-        remove_image_files(owner_id, document_id)
+        document.status = "failed"
+        document.error_message = document_error_message(exc)
+        await db.commit()
+        await db.refresh(document)
+        raise
+    except (EmbeddingError, TimeoutError, ConnectionError) as exc:
+        logger.exception("Temporary indexing failure for document %s", document_id)
         document.status = "failed"
         document.error_message = document_error_message(exc)
         await db.commit()
@@ -187,7 +206,6 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
     except (
         DocumentParserError,
         UnsupportedDocumentError,
-        EmbeddingError,
         IngestError,
         OSError,
         ValueError,
@@ -203,9 +221,12 @@ async def index_document(db: AsyncSession, document: Document) -> Document:
 
 from backend.app.services.storage_paths import (
     UnsafeStoragePathError,
+    build_public_storage_path,
     build_staging_path,
     build_storage_path,
-    resolve_user_file_path,
+    public_storage_dir,
+    resolve_document_file_path,
+    resolve_public_file_path,
     user_storage_dir,
     validate_safe_filename,
 )

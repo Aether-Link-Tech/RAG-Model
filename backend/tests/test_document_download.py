@@ -52,13 +52,34 @@ async def test_other_users_private_document_is_404(async_client, test_user: User
     assert b"secret body" not in response.content
 
 
-async def test_other_users_public_document_is_downloadable(async_client, test_user: User, test_user_2: User):
+async def test_other_users_public_document_is_not_downloadable(async_client, test_user: User, test_user_2: User):
+    """Ask-only access: others can ask about a public document, only the uploader can download it."""
     doc_id = await _upload(async_client, test_user, b"public handbook body", visibility="public", name="handbook.txt")
 
     response = await async_client.get(_url(doc_id), headers=_headers(test_user_2))
 
+    assert response.status_code == 404
+    assert b"public handbook body" not in response.content
+    # The same 404 as a document that does not exist: nothing about it is revealed.
+    missing = await async_client.get(_url(str(uuid.uuid4())), headers=_headers(test_user_2))
+    assert response.json() == missing.json()
+
+
+async def test_owner_still_downloads_own_public_document(async_client, test_user: User):
+    doc_id = await _upload(async_client, test_user, b"my public body", visibility="public", name="mine.txt")
+
+    response = await async_client.get(_url(doc_id), headers=_headers(test_user))
+
     assert response.status_code == 200
-    assert response.content == b"public handbook body"
+    assert response.content == b"my public body"
+
+
+async def test_admin_cannot_download_other_users_public_document(async_client, test_user: User, admin_user: User):
+    doc_id = await _upload(async_client, test_user, b"public body for admin", visibility="public")
+
+    response = await async_client.get(_url(doc_id), headers=_headers(admin_user))
+
+    assert response.status_code == 404
 
 
 async def test_unknown_document_is_404(async_client, test_user: User):

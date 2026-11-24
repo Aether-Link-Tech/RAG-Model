@@ -88,6 +88,31 @@ async def configure_rls_context(
         )
 
 
+GUEST_RLS_ROLE = "guest"
+
+
+async def configure_guest_rls_context(session: AsyncSession) -> None:
+    """Bind a guest (not signed in) identity: empty `app.user_id`, `app.user_role = 'guest'`.
+
+    Only `documents_guest_select_policy` matches it: indexed, public, showcase documents.
+    Every other policy requires `app.user_id`, so a guest can read nothing else and write nothing.
+    """
+    session.sync_session.info["rls_enforced"] = True
+    session.sync_session.info["rls_user_id"] = ""
+    session.sync_session.info["rls_user_role"] = GUEST_RLS_ROLE
+
+    if session.in_transaction():
+        await session.execute(text(f"SET LOCAL ROLE {RLS_DB_ROLE}"))
+        await session.execute(
+            text(
+                "SELECT "
+                "set_config('app.user_id', '', true), "
+                "set_config('app.user_role', :role, true)"
+            ),
+            {"role": GUEST_RLS_ROLE},
+        )
+
+
 async def enforce_unauthenticated_rls_context(session: AsyncSession) -> None:
     """Explicitly clear `app.user_id` and `app.user_role` for the active transaction.
 

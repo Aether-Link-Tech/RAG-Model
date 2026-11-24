@@ -12,10 +12,18 @@ from backend.app.core.config import settings
 from backend.app.services import document_ingest
 from backend.app.services.storage_paths import (
     UnsafeStoragePathError,
+    build_document_storage_path,
+    build_public_staging_path,
+    build_public_storage_path,
     build_staging_path,
     build_storage_path,
+    create_exclusive_public_staging_file,
     create_exclusive_staging_file,
+    open_public_file_no_follow,
     open_user_file_no_follow,
+    public_storage_dir,
+    resolve_document_file_path,
+    resolve_public_file_path,
     resolve_user_file_path,
     user_storage_dir,
     validate_safe_filename,
@@ -218,3 +226,114 @@ def test_race_resistant_helpers_open_and_create(isolate_storage):
     assert staging_path.is_file()
     with open_user_file_no_follow(user_id, staging_path) as reader:
         assert reader.read() == b"hello world"
+
+
+def test_public_storage_dir_layout_and_create_flag(isolate_storage):
+    expected = (Path(isolate_storage) / "public" / "documents").resolve()
+    directory = public_storage_dir(create=False)
+    assert directory.resolve() == expected
+    assert not directory.exists()
+
+    created = public_storage_dir(create=True)
+    assert created.resolve() == expected
+    assert created.is_dir()
+
+
+def test_build_public_storage_path_canonical_and_variant(isolate_storage):
+    doc_id = uuid.uuid4()
+    path = Path(build_public_storage_path(doc_id, "Shared Report.PDF"))
+    assert path.parent.resolve() == public_storage_dir().resolve()
+    assert path.name == f"{doc_id}.pdf"
+
+    variant = uuid.uuid4().hex
+    variant_path = Path(
+        build_public_storage_path(doc_id, "Shared Report.PDF", variant=variant)
+    )
+    assert variant_path.parent.resolve() == public_storage_dir().resolve()
+    assert variant_path.name == f"{doc_id}_{variant}.pdf"
+
+    staging_path, handle = create_exclusive_public_staging_file(
+        doc_id, "shared.txt", purpose="publish"
+    )
+    try:
+        handle.write(b"public bytes")
+    finally:
+        handle.close()
+    assert staging_path.parent.resolve() == public_storage_dir().resolve()
+    with open_public_file_no_follow(staging_path) as reader:
+        assert reader.read() == b"public bytes"
+
+
+def test_public_storage_blocks_path_traversal_and_symlinks(isolate_storage):
+    doc_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    pub_dir = public_storage_dir(create=True)
+
+    # Traversal and encoded traversal filenames are rejected.
+    for bad_name in (
+        "../etc/passwd",
+        "%2e%2e%2fsecret.txt",
+        "%252e%252e%252fsecret.txt",
+        "/abs/path.txt",
+        "evil\x00.pdf",
+    ):
+        with pytest.raises(UnsafeStoragePathError):
+            build_public_storage_path(doc_id, bad_name)
+
+    # User-private file path must not resolve as a public file.
+    private_path = Path(build_storage_path(user_id, uuid.uuid4(), "private.txt"))
+    private_path.write_text("private secret", encoding="utf-8")
+    with pytest.raises(UnsafeStoragePathError):
+        resolve_public_file_path(private_path, must_exist=False)
+    with pytest.raises(UnsafeStoragePathError):
+        open_public_file_no_follow(private_path)
+    with pytest.raises(UnsafeStoragePathError):
+        build_public_staging_path(
+            doc_id, purpose="delete", existing_path=private_path
+        )
+
+    # Traversal and NUL paths are rejected by resolve_public_file_path.
+    for bad_path in (
+        str(pub_dir / ".." / "users" / str(user_id) / "documents" / private_path.name),
+        "/etc/passwd",
+        f"{pub_dir / 'ok.txt'}\x00.txt",
+        "",
+        None,
+    ):
+        with pytest.raises(UnsafeStoragePathError):
+            resolve_public_file_path(bad_path, must_exist=False)
+
+    # Symlink inside public/documents pointing to a private user file is rejected.
+    symlink_file = pub_dir / f"{uuid.uuid4()}.txt"
+    os.symlink(private_path, symlink_file)
+    with pytest.raises(UnsafeStoragePathError):
+        resolve_public_file_path(symlink_file, must_exist=True)
+    with pytest.raises(UnsafeStoragePathError):
+        open_public_file_no_follow(symlink_file)
+
+    # Symlinked public/documents directory is rejected.
+    alt_root = Path(isolate_storage) / "alt_root"
+    (alt_root / "public").mkdir(parents=True)
+    os.symlink(user_storage_dir(user_id, create=True), alt_root / "public" / "documents")
+    with pytest.raises(UnsafeStoragePathError):
+        public_storage_dir(base_dir=alt_root)
+
+
+def test_document_storage_dispatch_routes_by_visibility(isolate_storage):
+    user_id, doc_id = uuid.uuid4(), uuid.uuid4()
+    priv = Path(
+        build_document_storage_path(user_id, doc_id, "a.txt", visibility="private")
+    )
+    pub = Path(
+        build_document_storage_path(user_id, doc_id, "a.txt", visibility="public")
+    )
+    assert priv.parent.resolve() == user_storage_dir(user_id).resolve()
+    assert pub.parent.resolve() == public_storage_dir().resolve()
+    assert resolve_document_file_path(user_id, priv, visibility="private") == priv.resolve()
+    assert resolve_document_file_path(user_id, pub, visibility="public") == pub.resolve()
+    with pytest.raises(UnsafeStoragePathError):
+        resolve_document_file_path(user_id, priv, visibility="public")
+    with pytest.raises(UnsafeStoragePathError):
+        resolve_document_file_path(user_id, pub, visibility="private")
+    with pytest.raises(UnsafeStoragePathError):
+        build_document_storage_path(user_id, doc_id, "a.txt", visibility="invalid")  # type: ignore[arg-type]

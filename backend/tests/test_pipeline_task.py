@@ -293,44 +293,43 @@ async def test_replace_cleans_old_chunks_before_dispatching_task(
 
 @pytest.mark.asyncio
 @pytest.mark.isolation
-async def test_near_duplicate_upload_is_discarded_before_celery_dispatch(
+async def test_near_duplicate_upload_is_queued_for_worker(
     require_postgres,
     async_client,
     test_user,
     monkeypatch,
 ):
-    events = []
     dispatches = []
-    rejected_paths = []
-    document_id = uuid.uuid4()
-
-    async def reject_duplicate(db, document):
-        events.append("check")
-        raise NearDuplicateError(
-            NearDuplicateMatch(document_id, "existing.txt", "own", 0.9)
-        )
-
-    original_discard = documents_api._discard_rejected_upload
-
-    async def record_cleanup(db, document):
-        events.append("cleanup")
-        rejected_paths.append(Path(document.file_path))
-        await original_discard(db, document)
-
-    async def record_audit(*args, **kwargs):
-        events.append("audit")
+    request_side_effects = []
 
     def record_dispatch(*args):
         dispatches.append(args)
-        events.append("dispatch")
 
+    async def record_index(*args, **kwargs):
+        request_side_effects.append("index")
+
+    def record_cleanup(name):
+        def cleanup(*args, **kwargs):
+            request_side_effects.append(name)
+
+        return cleanup
+
+    monkeypatch.setattr(documents_api, "index_document", record_index)
     monkeypatch.setattr(
-        documents_api, "check_document_for_near_duplicate", reject_duplicate
+        documents_api,
+        "remove_image_files",
+        record_cleanup("images"),
     )
     monkeypatch.setattr(
-        documents_api, "_discard_rejected_upload", record_cleanup
+        documents_api,
+        "delete_document_chunks",
+        record_cleanup("vectors"),
     )
-    monkeypatch.setattr(documents_api, "log_security_event", record_audit)
+    monkeypatch.setattr(
+        documents_api,
+        "log_security_event",
+        record_cleanup("audit"),
+    )
     monkeypatch.setattr(document_tasks.process_document, "delay", record_dispatch)
     token = create_access_token(test_user.id, role=test_user.role)
     headers = {"Authorization": f"Bearer {token}"}
@@ -341,12 +340,12 @@ async def test_near_duplicate_upload_is_discarded_before_celery_dispatch(
         files={"file": ("duplicate.txt", io.BytesIO(b"duplicate text"), "text/plain")},
     )
 
-    assert response.status_code == 409, response.text
-    assert "existing.txt" in response.json()["detail"]
-    assert events == ["check", "cleanup", "audit"]
-    assert dispatches == []
-    assert len(rejected_paths) == 1
-    assert not rejected_paths[0].exists()
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "pending"
+    assert dispatches == [
+        (response.json()["id"], str(test_user.id), test_user.role)
+    ]
+    assert request_side_effects == []
 
 
 @pytest.mark.asyncio

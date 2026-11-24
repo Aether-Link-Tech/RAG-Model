@@ -4,6 +4,7 @@ import os
 import random
 import time
 import uuid
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -12,6 +13,8 @@ from sqlalchemy import text
 
 from backend.app.api.v1 import documents as documents_api
 from backend.app.core.config import settings
+from backend.app.db.rls import configure_rls_context
+from backend.app.models.document import Document
 from backend.app.services import document_ingest
 from backend.app.services import near_duplicate as nd
 from backend.tests.conftest import TestingSessionLocal, _CleanupSessionLocal, bearer, test_engine
@@ -117,37 +120,55 @@ async def _privileged(sql, **params):
         return result
 
 
-async def test_public_match_is_rejected_and_named(async_client, test_user, test_user_2, real_indexing):
+async def _assert_near_duplicate_failed(client, user, response):
+    assert response.status_code == 201, response.text
+    document_id = response.json()["id"]
+    result = await client.get(
+        f"/api/v1/documents/{document_id}", headers=bearer(user)
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["status"] == "failed"
+    assert result.json()["error_message"] == "A similar document already exists."
+
+    async with TestingSessionLocal() as db:
+        await configure_rls_context(db, user.id, user.role)
+        document = await db.get(Document, uuid.UUID(document_id))
+        assert document is not None
+        assert not Path(document.file_path).exists()
+
+    from backend.app.db.chroma import get_private_collection
+
+    collection = get_private_collection(user.id)
+    if collection is not None:
+        chunks = collection.get(
+            where={"document_id": document_id},
+            include=["metadatas"],
+        )
+        assert chunks["ids"] == []
+
+
+async def test_public_match_is_rejected_and_named(
+    require_postgres, async_client, test_user, test_user_2, real_indexing
+):
     original, near = pair_with_jaccard(0.75)
     first = await _upload(async_client, test_user, "employee-handbook.txt", original, "public")
     assert first.status_code == 201 and first.json()["status"] == "indexed", first.text
 
     res = await _upload(async_client, test_user_2, "my-copy.txt", near)
-    assert res.status_code == 409
-    detail = res.json()["detail"]
-    assert "employee-handbook.txt" in detail and "public" in detail and "use that document" in detail
-
-    # Rejected upload removed cleanly: no row, no file, no vectors, and the rejection is audited.
-    listing = (await async_client.get("/api/v1/documents", headers=bearer(test_user_2))).json()
-    assert [d["filename"] for d in listing if d["is_owner"]] == []
-    b_folder = document_ingest.user_storage_dir(test_user_2.id)
-    assert not b_folder.exists() or not any(b_folder.iterdir())
-    from backend.app.db.chroma import get_private_collection
-
-    collection = get_private_collection(test_user_2.id)
-    assert collection is None or collection.count() == 0
+    await _assert_near_duplicate_failed(async_client, test_user_2, res)
     audit = (await _privileged(
         "SELECT reason FROM security_audit_log WHERE user_id = :u", u=test_user_2.id)).scalars().all()
     assert "Near-duplicate of an existing document" in audit
     await _privileged("DELETE FROM security_audit_log WHERE user_id = :u", u=test_user_2.id)
 
 
-async def test_own_private_match_is_named(async_client, test_user, real_indexing):
+async def test_own_private_match_is_named(
+    require_postgres, async_client, test_user, real_indexing
+):
     original, near = pair_with_jaccard(0.8)
     assert (await _upload(async_client, test_user, "board-notes.txt", original)).status_code == 201
     res = await _upload(async_client, test_user, "board-notes-v2.txt", near)
-    assert res.status_code == 409
-    assert "You already uploaded" in res.json()["detail"] and "board-notes.txt" in res.json()["detail"]
+    await _assert_near_duplicate_failed(async_client, test_user, res)
     await _privileged("DELETE FROM security_audit_log WHERE user_id = :u", u=test_user.id)
 
 
@@ -274,7 +295,9 @@ async def test_lookup_stays_fast_with_many_documents(test_user):
     assert elapsed < limit, f"near-duplicate check took {elapsed:.2f}s for {n} documents"
 
 
-async def test_published_documents_keep_their_fingerprint(async_client, test_user, test_user_2, real_indexing):
+async def test_published_documents_keep_their_fingerprint(
+    require_postgres, async_client, test_user, test_user_2, real_indexing
+):
     """Publishing (AL-185) copies vectors instead of re-indexing; the fingerprint must follow."""
     original, near = pair_with_jaccard(0.8)
     private = await _upload(async_client, test_user, "policy-handbook.txt", original)
@@ -288,5 +311,5 @@ async def test_published_documents_keep_their_fingerprint(async_client, test_use
     )).scalar_one() == "public"
 
     res = await _upload(async_client, test_user_2, "copy.txt", near)
-    assert res.status_code == 409 and "policy-handbook.txt" in res.json()["detail"] and "public" in res.json()["detail"]
+    await _assert_near_duplicate_failed(async_client, test_user_2, res)
     await _privileged("DELETE FROM security_audit_log WHERE user_id = ANY(:u)", u=[test_user.id, test_user_2.id])

@@ -6,8 +6,12 @@ from backend.app.core.celery_app import celery_app
 from backend.app.core.config import settings
 from backend.app.db.rls import clear_rls_context, configure_rls_context
 from backend.app.models.document import Document
+from backend.app.services import audit_log
 from backend.app.services.document_ingest import document_error_message, index_document
+from backend.app.services.document_images import remove_image_files
 from backend.app.services.near_duplicate import NearDuplicateError
+from backend.app.services.storage_paths import resolve_user_file_path
+from backend.app.services.vector_store import delete_document_chunks
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -47,8 +51,32 @@ async def _process_document(
 
             try:
                 await index_document(db, document)
-            except NearDuplicateError:
-                logger.info("Indexing of %s rejected as near-duplicate", document_id)
+            except NearDuplicateError as exc:
+                logger.exception("Indexing of %s rejected as near-duplicate", document_id)
+                owner_id = document.user_id
+                file_path = resolve_user_file_path(
+                    owner_id, document.file_path, must_exist=False
+                )
+                remove_image_files(owner_id, document_id)
+                try:
+                    file_path.unlink()
+                except FileNotFoundError:
+                    pass
+                delete_document_chunks(
+                    user_id=owner_id,
+                    document_id=document_id,
+                    visibility=document.visibility,
+                )
+                document.status = "failed"
+                document.error_message = document_error_message(exc)
+                await db.commit()
+                await audit_log.record_security_event(
+                    event_type=audit_log.UPLOAD_REJECTED,
+                    user_id=owner_id,
+                    filename=document.filename,
+                    reason="Near-duplicate of an existing document",
+                    ip_address=None,
+                )
             except Exception as exc:
                 logger.exception("Unexpected indexing failure for document %s", document_id)
                 await db.rollback()

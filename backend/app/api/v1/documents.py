@@ -26,15 +26,11 @@ from backend.app.core.roles import UserRole
 from backend.app.models.document import Document
 from backend.app.schemas.document import DocumentResponse, PublishResponse, Visibility
 from backend.app.services import audit_log
-from backend.app.services.document_parser import DocumentParserError
 from backend.app.services.document_ingest import (
-    IngestError,
-    check_document_for_near_duplicate,
     document_error_message,
     index_document,
     reindex_document_in_background,
 )
-from backend.app.services.near_duplicate import NearDuplicateError
 from backend.app.services.document_images import remove_image_files
 from backend.app.services.clamav import (
     ClamAVUnavailableError,
@@ -283,18 +279,6 @@ async def _safe_rollback(db: DbSession) -> None:
         pass
 
 
-async def _discard_rejected_upload(db: DbSession, document: Document) -> None:
-    file_path, owner_id, document_id = document.file_path, document.user_id, document.id
-    remove_image_files(owner_id, document_id)
-    try:
-        await db.delete(document)
-        await db.commit()
-    except Exception:
-        await _safe_rollback(db)
-        logger.exception("Could not remove rejected near-duplicate document %s", document_id)
-    _best_effort_remove_user_file(owner_id, file_path)
-
-
 def _duplicate_conflict_detail(visibility: Visibility) -> str:
     if visibility == "private":
         return "A private document with this content hash already exists in your workspace."
@@ -511,32 +495,6 @@ async def upload_document(
             await _safe_rollback(db)
         raise
 
-    await db.refresh(document)
-    try:
-        await check_document_for_near_duplicate(db, document)
-    except NearDuplicateError as exc:
-        logger.exception("Upload rejected as near-duplicate for document %s", document.id)
-        await _discard_rejected_upload(db, document)
-        await log_security_event(
-            user_id_str, filename_str, "Near-duplicate of an existing document", client_ip,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(exc),
-        ) from exc
-    except (DocumentParserError, IngestError, OSError, ValueError) as exc:
-        logger.exception("Could not check upload for near-duplicates: %s", document.id)
-        await _safe_rollback(db)
-        document = await db.get(Document, document_id)
-        if document is not None:
-            document.status = "failed"
-            document.error_message = document_error_message(exc)
-            await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not verify the document for near-duplicates. Please retry.",
-        ) from exc
-
     try:
         process_document.delay(str(document.id), str(current_user.id), current_user.role)
     except Exception as exc:
@@ -551,6 +509,7 @@ async def upload_document(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Document was uploaded, but its indexing job could not be queued. Please retry.",
         ) from exc
+    await db.refresh(document)
     return _to_response(document, current_user.id)
 
 

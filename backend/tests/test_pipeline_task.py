@@ -11,6 +11,7 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.api.v1 import documents as documents_api
 from backend.app.core.security import create_access_token
+from backend.app.services import audit_log
 from backend.app.services.near_duplicate import NearDuplicateError, NearDuplicateMatch
 from backend.tests.conftest import test_engine
 from backend.app.tasks import document_tasks
@@ -141,6 +142,83 @@ def test_task_records_and_logs_unexpected_failure(
     assert "Parser service unavailable" not in document.error_message
     assert "Unexpected indexing failure" in caplog.text
     assert "RuntimeError: Parser service unavailable" in caplog.text
+
+
+def test_task_cleans_up_and_audits_near_duplicate(
+    mock_task_session,
+    monkeypatch,
+    tmp_path,
+    caplog,
+):
+    document_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    file_path = tmp_path / "duplicate.txt"
+    file_path.write_text("duplicate content")
+    document = _document(document_id)
+    document.user_id = user_id
+    document.filename = "duplicate.txt"
+    document.file_path = str(file_path)
+    document.visibility = "private"
+    mock_task_session(document)
+
+    cleanup_calls = []
+    audit_calls = []
+
+    async def reject_duplicate(db, actual_document):
+        raise NearDuplicateError(
+            NearDuplicateMatch(uuid.uuid4(), "existing.txt", "own", 0.9)
+        )
+
+    async def record_audit(**kwargs):
+        audit_calls.append(kwargs)
+
+    monkeypatch.setattr(document_tasks, "index_document", reject_duplicate)
+    monkeypatch.setattr(
+        document_tasks,
+        "resolve_user_file_path",
+        lambda owner_id, stored_path, must_exist=False: Path(stored_path),
+    )
+    monkeypatch.setattr(
+        document_tasks,
+        "remove_image_files",
+        lambda owner_id, doc_id: cleanup_calls.append(("images", owner_id, doc_id)),
+    )
+    monkeypatch.setattr(
+        document_tasks,
+        "delete_document_chunks",
+        lambda **kwargs: cleanup_calls.append(("vectors", kwargs)),
+    )
+    monkeypatch.setattr(audit_log, "record_security_event", record_audit)
+
+    result = document_tasks.process_document.apply(
+        args=[str(document_id), str(user_id), "user"]
+    )
+
+    assert result.get() is None
+    assert document.status == "failed"
+    assert document.error_message == "A similar document already exists."
+    assert file_path.exists() is False
+    assert cleanup_calls == [
+        ("images", user_id, document_id),
+        (
+            "vectors",
+            {
+                "user_id": user_id,
+                "document_id": document_id,
+                "visibility": "private",
+            },
+        ),
+    ]
+    assert audit_calls == [
+        {
+            "event_type": audit_log.UPLOAD_REJECTED,
+            "user_id": user_id,
+            "filename": "duplicate.txt",
+            "reason": "Near-duplicate of an existing document",
+            "ip_address": None,
+        }
+    ]
+    assert "NearDuplicateError" in caplog.text
 
 
 def test_task_skips_missing_document_without_crashing(mock_task_session):

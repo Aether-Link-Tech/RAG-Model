@@ -23,7 +23,15 @@ import {
 import Logo from '../components/Logo';
 import { useSession } from '../hooks/useSession';
 import { getErrorMessage, hasStatus } from '../services/api';
-import { askPublic, listShowcase, PUBLIC_QUESTION_MAX, type PublicAnswer, type PublicSource } from '../services/publicService';
+import {
+  askPublic,
+  getFreeQuestions,
+  listShowcase,
+  PUBLIC_QUESTION_MAX,
+  type FreeQuestions,
+  type PublicAnswer,
+  type PublicSource,
+} from '../services/publicService';
 
 const FEATURES = [
   { icon: LockKeyhole, title: 'Private by design', text: 'Every user has an isolated knowledge base. PostgreSQL row-level security checks every passage before the AI sees it.' },
@@ -111,10 +119,12 @@ function AskBox() {
   const [error, setError] = useState('');
   const [result, setResult] = useState<PublicAnswer | null>(null);
   const [active, setActive] = useState<number | null>(null);
+  const [quota, setQuota] = useState<FreeQuestions | null>(null);
   const sourcesRef = useRef<HTMLUListElement>(null);
 
   useEffect(() => {
     listShowcase().then(setDocuments).catch(() => setDocuments([]));
+    getFreeQuestions().then(setQuota).catch(() => setQuota(null));
   }, []);
 
   async function submit(event: FormEvent) {
@@ -127,10 +137,17 @@ function AskBox() {
     setActive(null);
     setAsked(q);
     try {
-      setResult(await askPublic(q));
+      const answer = await askPublic(q);
+      setResult(answer);
+      setQuota({ free_questions_left: answer.free_questions_left, free_questions_limit: answer.free_questions_limit });
     } catch (err) {
-      if (hasStatus(err, 429)) setError('You have asked a lot of questions. Please wait a moment, or sign in to keep asking.');
-      else setError(getErrorMessage(err, 'The assistant is unavailable right now. Please try again shortly.'));
+      if (hasStatus(err, 429)) {
+        const message = getErrorMessage(err, 'Please wait a moment, or sign in to keep asking.');
+        if (/free questions/i.test(message)) {
+          setQuota((old) => ({ free_questions_left: 0, free_questions_limit: old?.free_questions_limit ?? 0 }));
+        }
+        setError(message);
+      } else setError(getErrorMessage(err, 'The assistant is unavailable right now. Please try again shortly.'));
     } finally {
       setLoading(false);
     }
@@ -142,6 +159,7 @@ function AskBox() {
   }
 
   const empty = documents !== null && documents.length === 0;
+  const usedUp = quota !== null && quota.free_questions_left <= 0;
 
   return (
     <div className="landing-ask">
@@ -163,20 +181,42 @@ function AskBox() {
           placeholder={empty ? 'Questions open once documents are published' : 'Ask a question about these documents…'}
           value={question}
           maxLength={PUBLIC_QUESTION_MAX}
-          disabled={empty}
+          disabled={empty || usedUp}
           onChange={(e) => setQuestion(e.target.value)}
         />
-        <button type="submit" className="button button--primary" disabled={!question.trim() || loading || empty}>
+        <button type="submit" className="button button--primary" disabled={!question.trim() || loading || empty || usedUp}>
           {loading ? 'Thinking…' : 'Ask'} <Send size={15} />
         </button>
       </form>
+
+      {quota && !empty && !usedUp && (
+        <p className="landing-quota" data-testid="free-questions">
+          <strong>{quota.free_questions_left}</strong> of {quota.free_questions_limit} free questions left today
+          <span>
+            {' · '}
+            <Link to="/signup">Create a free account</Link> or <Link to="/login">sign in</Link> for unlimited questions
+          </span>
+        </p>
+      )}
+
+      {usedUp && (
+        <div className="landing-limit" data-testid="sign-in-prompt">
+          <LockKeyhole size={20} />
+          <div>
+            <strong>You have used today&rsquo;s free questions</strong>
+            <p>Sign in to keep asking, upload your own documents and keep a history of your answers.</p>
+          </div>
+          <Link to="/signup" className="button button--primary">Create account</Link>
+          <Link to="/login" className="button button--glass">Sign in</Link>
+        </div>
+      )}
 
       {loading && (
         <div className="landing-answer landing-answer--loading" aria-live="polite">
           <span className="typing"><i /><i /><i /></span> Searching the documents and checking every statement…
         </div>
       )}
-      {error && (
+      {error && !usedUp && (
         <div className="landing-answer landing-answer--error" role="alert">
           <TriangleAlert size={17} /> {error}
         </div>
@@ -261,7 +301,10 @@ export default function LandingPage() {
       <section id="ask" className="landing-section">
         <div className="landing-section__head">
           <h2>Ask the public documents</h2>
-          <p>No account needed. Try a question about the documents below and see where every answer comes from.</p>
+          <p>
+            No account needed: open 24/7 with a few free questions a day. See where every answer comes from, then
+            sign in for unlimited questions.
+          </p>
         </div>
         <AskBox />
       </section>

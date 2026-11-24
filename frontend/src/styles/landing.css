@@ -101,7 +101,8 @@
   color: #9fb4cf;
 }
 
-/* Glass panels shared by the ask box, features and team */
+/* Glass panels shared by the ask box,
+features and team */
 .landing-ask,
 .feature-card,
 .team-card,
@@ -176,6 +177,48 @@
   flex-shrink: 0;
 }
 
+.landing-quota {
+  margin-top: 10px;
+  color: #9fb4cf;
+  font-size: 13px;
+}
+
+.landing-quota strong {
+  color: #6cd5ff;
+}
+
+.landing-quota a {
+  color: #9fe3ff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.landing-limit {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  border: 1px solid rgb(67 199 255 / 35%);
+  border-radius: 14px;
+  padding: 16px 18px;
+  background: rgb(22 119 255 / 12%);
+  color: #6cd5ff;
+  animation: fade-up 400ms var(--ease) both;
+}
+
+.landing-limit > div {
+  flex: 1;
+  min-width: 220px;
+  color: #eaf3ff;
+}
+
+.landing-limit p {
+  margin-top: 2px;
+  color: #9fb4cf;
+  font-size: 13.5px;
+}
+
 .landing-answer {
   margin-top: 16px;
   border-radius: 14px;
@@ -230,7 +273,7 @@
   font-size: 12px;
 }
 
-.cite {
+.landing .cite {
   display: inline-grid;
   place-items: center;
   min-width: 20px;
@@ -246,18 +289,18 @@
   vertical-align: 2px;
 }
 
-button.cite:hover {
+.landing button.cite:hover {
   background: #43c7ff;
   color: #04203f;
 }
 
-.landing-sources {
+.landing .landing-sources {
   margin-top: 16px;
   display: grid;
   gap: 10px;
 }
 
-.source-card {
+.landing .source-card {
   border: 1px solid rgb(105 176 255 / 20%);
   border-radius: 12px;
   padding: 12px 14px;
@@ -265,12 +308,13 @@ button.cite:hover {
   transition: border-color 200ms ease, box-shadow 200ms ease;
 }
 
-.source-card--active {
+.landing .source-card--active {
   border-color: #43c7ff;
   box-shadow: 0 0 0 3px rgb(67 199 255 / 18%);
 }
 
-.source-card__head {
+.landing .source-card__head {
+  color: #eaf3ff;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -279,11 +323,11 @@ button.cite:hover {
   font-size: 13px;
 }
 
-.source-card__head small {
+.landing .source-card__head small {
   color: #8fa7c6;
 }
 
-.source-card blockquote {
+.landing .source-card blockquote {
   border-left: 2px solid rgb(67 199 255 / 45%);
   padding-left: 12px;
   color: #b5c7de;
@@ -291,7 +335,7 @@ button.cite:hover {
   line-height: 1.65;
 }
 
-.source-card mark {
+.landing .source-card mark {
   border-radius: 4px;
   padding: 1px 3px;
   background: rgb(250 204 21 / 28%);
@@ -315,8 +359,9 @@ button.cite:hover {
 .typing i:nth-child(3) { animation-delay: 0.3s; }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 0.3; transform: translateY(0); }
-  50% { opacity: 1; transform: translateY(-3px); }
+0%,
+100% { opacity: 0.3; transform: translateY(0); }
+50% { opacity: 1; transform: translateY(-3px); }
 }
 
 /* Features */
@@ -452,33 +497,33 @@ button.cite:hover {
 }
 
 @media (max-width: 900px) {
-  .feature-grid,
-  .team-grid {
+.feature-grid,
+.team-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .pipeline {
+.pipeline {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 600px) {
-  .landing-nav a:not(.button) {
+.landing-nav a:not(.button) {
     display: none;
   }
 
-  .landing-hero,
-  .landing-section {
+.landing-hero,
+.landing-section {
     width: calc(100% - 32px);
   }
 
-  .feature-grid,
-  .team-grid,
-  .pipeline {
+.feature-grid,
+.team-grid,
+.pipeline {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .landing-ask {
+.landing-ask {
     padding: 14px;
   }
 }

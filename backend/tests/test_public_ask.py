@@ -105,7 +105,8 @@ async def test_showcase_list_names_only_showcase_documents(async_client, test_us
     await _upload(async_client, test_user, PUBLIC_OTHER, "parking.txt", visibility="public")
     r = await async_client.get("/api/v1/public/documents")
     assert r.status_code == 200
-    assert r.json() == [{"name": "library.txt"}]
+    names = [d["name"] for d in r.json()]
+    assert "library.txt" in names and "parking.txt" not in names  # other rows may exist in a dev DB
 
 
 # ---------------------------------------------------------------- who can set showcase
@@ -157,12 +158,40 @@ async def test_database_guest_context_sees_only_showcase_and_cannot_write(async_
 
 
 # ---------------------------------------------------------------- limits
-async def test_rate_limit_per_ip(async_client, library, qa_env, monkeypatch):
+async def test_burst_limit_per_minute(async_client, library, qa_env, monkeypatch):
     monkeypatch.setattr(settings, "PUBLIC_ASK_PER_MINUTE", 2)
     codes = [(await _guest_ask(async_client, "library weekend opening")).status_code for _ in range(3)]
     assert codes == [200, 200, 429]
     r = await _guest_ask(async_client, "library weekend opening")
     assert int(r.headers["retry-after"]) >= 1 and "sign in" in r.json()["detail"]
+
+
+async def test_free_questions_per_day_then_sign_in(async_client, library, qa_env, monkeypatch):
+    monkeypatch.setattr(settings, "PUBLIC_ASK_PER_MINUTE", 100)
+    monkeypatch.setattr(settings, "PUBLIC_ASK_PER_DAY", 2)
+    assert (await async_client.get("/api/v1/public/limits")).json() ==         {"free_questions_left": 2, "free_questions_limit": 2}
+    first = await _guest_ask(async_client, "library weekend opening")
+    second = await _guest_ask(async_client, "library weekend opening")
+    assert [first.json()["free_questions_left"], second.json()["free_questions_left"]] == [1, 0]
+    third = await _guest_ask(async_client, "library weekend opening")
+    assert third.status_code == 429
+    assert "2 free questions" in third.json()["detail"] and "Sign in" in third.json()["detail"]
+    # Refused questions are not counted, and checking the limit never uses one.
+    assert (await async_client.get("/api/v1/public/limits")).json()["free_questions_left"] == 0
+
+
+async def test_failed_question_is_not_counted(async_client, library, qa_env, monkeypatch):
+    from backend.app.services import llm
+
+    monkeypatch.setattr(settings, "PUBLIC_ASK_PER_DAY", 3)
+
+    async def down(messages, retries=2):
+        raise llm.LLMError(llm.UNAVAILABLE)
+
+    monkeypatch.setattr(llm, "complete", down)
+    r = await _guest_ask(async_client, "library weekend opening")
+    assert r.status_code == 503
+    assert (await async_client.get("/api/v1/public/limits")).json()["free_questions_left"] == 3
 
 
 async def test_long_question_is_rejected_before_any_work(async_client, qa_env, monkeypatch):
@@ -175,6 +204,7 @@ async def test_feature_switch_off_hides_endpoints(async_client, qa_env, monkeypa
     monkeypatch.setattr(settings, "PUBLIC_ASK_ENABLED", False)
     assert (await _guest_ask(async_client, "anything")).status_code == 404
     assert (await async_client.get("/api/v1/public/documents")).status_code == 404
+    assert (await async_client.get("/api/v1/public/limits")).status_code == 404
 
 
 # ---------------------------------------------------------------- highlight / excerpt units

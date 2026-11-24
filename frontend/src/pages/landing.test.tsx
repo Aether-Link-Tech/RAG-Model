@@ -10,6 +10,7 @@ vi.mock('../services/publicService', async (orig) => ({
   ...(await orig<typeof import('../services/publicService')>()),
   listShowcase: vi.fn(),
   askPublic: vi.fn(),
+  getFreeQuestions: vi.fn(),
 }));
 
 import * as pub from '../services/publicService';
@@ -27,6 +28,7 @@ function renderAt(path: string) {
 beforeEach(() => {
   session.clear();
   vi.mocked(pub.listShowcase).mockResolvedValue(['library.txt']);
+  vi.mocked(pub.getFreeQuestions).mockResolvedValue({ free_questions_left: 5, free_questions_limit: 5 });
 });
 
 describe('landing page', () => {
@@ -47,6 +49,7 @@ describe('landing page', () => {
         highlight: 'On weekends the library opens at 10 am.',
       }],
       insufficient: false, uncertain: false, uncertain_reason: null,
+      free_questions_left: 4, free_questions_limit: 5,
     });
     renderAt('/');
     await screen.findByText('library.txt');
@@ -57,11 +60,34 @@ describe('landing page', () => {
     expect(answer.querySelector('mark')).toHaveTextContent('On weekends the library opens at 10 am.');
     expect(within(answer).queryByRole('button', { name: /download/i })).not.toBeInTheDocument();
     expect(within(answer).getByText(/cannot be downloaded/i)).toBeInTheDocument();
+    expect(screen.getByTestId('free-questions')).toHaveTextContent('4 of 5 free questions left today');
   });
 
-  it('explains the rate limit', async () => {
+  it('asks guests to sign in when the free questions are used up', async () => {
+    vi.mocked(pub.getFreeQuestions).mockResolvedValue({ free_questions_left: 0, free_questions_limit: 5 });
+    renderAt('/');
+    const prompt = await screen.findByTestId('sign-in-prompt');
+    expect(within(prompt).getByRole('link', { name: /create account/i })).toHaveAttribute('href', '/signup');
+    expect(screen.getByLabelText(/ask a question/i)).toBeDisabled();
+  });
+
+  it('shows the sign-in prompt when the server says the free limit is reached', async () => {
     vi.mocked(pub.askPublic).mockRejectedValue(
-      Object.assign(new Error('x'), { isAxiosError: true, response: { status: 429, data: { detail: 'Too many' } } }),
+      Object.assign(new Error('x'), {
+        isAxiosError: true,
+        response: { status: 429, data: { detail: 'You have used your 5 free questions for today. Sign in or create a free account to keep asking.' } },
+      }),
+    );
+    renderAt('/');
+    await screen.findByText('library.txt');
+    await userEvent.type(screen.getByLabelText(/ask a question/i), 'hours?');
+    await userEvent.click(screen.getByRole('button', { name: /^ask/i }));
+    expect(await screen.findByTestId('sign-in-prompt')).toBeInTheDocument();
+  });
+
+  it('explains the burst limit', async () => {
+    vi.mocked(pub.askPublic).mockRejectedValue(
+      Object.assign(new Error('x'), { isAxiosError: true, response: { status: 429, data: { detail: 'You are asking very quickly. Please wait a moment, or sign in to keep asking.' } } }),
     );
     renderAt('/');
     await screen.findByText('library.txt');

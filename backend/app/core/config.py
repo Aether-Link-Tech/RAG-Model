@@ -121,8 +121,9 @@ class Settings(BaseConfig):
 
     # Public landing page Q&A: guests ask questions over admin-approved showcase documents only.
     PUBLIC_ASK_ENABLED: bool = os.getenv("PUBLIC_ASK_ENABLED", "True").lower() in ("true", "1")
-    PUBLIC_ASK_PER_MINUTE: int = int(os.getenv("PUBLIC_ASK_PER_MINUTE", "5"))
-    PUBLIC_ASK_PER_DAY: int = int(os.getenv("PUBLIC_ASK_PER_DAY", "30"))
+    # Guests get a few free questions per day (per IP); signing in removes the limit.
+    PUBLIC_ASK_PER_MINUTE: int = int(os.getenv("PUBLIC_ASK_PER_MINUTE", "3"))
+    PUBLIC_ASK_PER_DAY: int = int(os.getenv("PUBLIC_ASK_PER_DAY", "5"))
     PUBLIC_QUESTION_MAX_CHARS: int = int(os.getenv("PUBLIC_QUESTION_MAX_CHARS", "500"))
     # Guests see an excerpt around the highlighted sentence, never a whole chunk (no document rebuild).
     PUBLIC_SOURCE_MAX_CHARS: int = int(os.getenv("PUBLIC_SOURCE_MAX_CHARS", "400"))

@@ -19,6 +19,13 @@ export interface PublicAnswer {
   insufficient: boolean;
   uncertain: boolean;
   uncertain_reason: string | null;
+  free_questions_left: number;
+  free_questions_limit: number;
+}
+
+export interface FreeQuestions {
+  free_questions_left: number;
+  free_questions_limit: number;
 }
 
 export const PUBLIC_QUESTION_MAX = 500; // PUBLIC_QUESTION_MAX_CHARS in backend/app/core/config.py
@@ -31,4 +38,9 @@ export async function askPublic(question: string): Promise<PublicAnswer> {
 export async function listShowcase(): Promise<string[]> {
   const { data } = await api.get<{ name: string }[]>('/public/documents');
   return data.map((d) => d.name);
+}
+
+export async function getFreeQuestions(): Promise<FreeQuestions> {
+  const { data } = await api.get<FreeQuestions>('/public/limits');
+  return data;
 }

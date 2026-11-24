@@ -15,12 +15,15 @@ from starlette.datastructures import Headers
 
 from backend.app.api.v1 import documents as documents_api
 from backend.app.models.user import UserRole
+from backend.app.services.near_duplicate import NearDuplicateError, NearDuplicateMatch
 from backend.app.services import document_ingest, document_publish
 from backend.app.services.storage_paths import (
     UnsafeStoragePathError,
     build_storage_path,
     user_storage_dir,
 )
+from backend.app.tasks import document_tasks
+from backend.tests.test_pipeline_task import FakeSession, _async_noop
 
 
 def _make_request() -> SimpleNamespace:
@@ -321,16 +324,45 @@ async def test_index_document_rejects_unsafe_stored_path_before_db_or_parser(iso
 
 
 @pytest.mark.asyncio
-async def test_discard_rejected_upload_never_deletes_foreign_file(isolate_storage):
+async def test_worker_rejected_upload_never_deletes_foreign_file(
+    isolate_storage, monkeypatch
+):
     user_a = _make_user()
     user_b = _make_user()
     path_b = Path(build_storage_path(user_b.id, uuid.uuid4(), "victim.txt"))
     path_b.write_text("keep me", encoding="utf-8")
 
     doc_a = _make_doc(owner_id=user_a.id, file_path=str(path_b))
-    db = AsyncMock()
+    session = FakeSession(doc_a)
+    monkeypatch.setattr(document_tasks, "WorkerSessionLocal", lambda: session)
+    monkeypatch.setattr(document_tasks, "configure_rls_context", _async_noop)
+    monkeypatch.setattr(document_tasks, "clear_rls_context", lambda db: None)
 
-    await documents_api._discard_rejected_upload(db, doc_a)
+    async def reject_duplicate(db, document):
+        raise NearDuplicateError(
+            NearDuplicateMatch(uuid.uuid4(), "existing.txt", "own", 0.9)
+        )
+
+    monkeypatch.setattr(document_tasks, "index_document", reject_duplicate)
+    delete_chunks = MagicMock()
+    monkeypatch.setattr(document_tasks, "delete_document_chunks", delete_chunks)
+    audit_event = AsyncMock()
+    monkeypatch.setattr(
+        document_tasks.audit_log,
+        "record_security_event",
+        audit_event,
+    )
+
+    await document_tasks._process_document(doc_a.id, user_a.id, user_a.role)
+
+    assert doc_a.status == "failed"
+    assert doc_a.error_message == "A similar document already exists."
+    delete_chunks.assert_called_once_with(
+        user_id=user_a.id,
+        document_id=doc_a.id,
+        visibility=doc_a.visibility,
+    )
+    audit_event.assert_awaited_once()
     assert path_b.read_text(encoding="utf-8") == "keep me"
 
 

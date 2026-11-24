@@ -5,6 +5,7 @@
 @import "./styles/auth.css";
 @import "./styles/app.css";
 @import "./styles/chat.css";
+@import "./styles/landing.css";
 
 /* Design tokens — change a color here and it updates everywhere */
 :root {

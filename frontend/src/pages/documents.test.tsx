@@ -100,7 +100,17 @@ describe('documents page', () => {
     const drawer = await screen.findByRole('dialog', { name: /handbook/i });
     expect(within(drawer).queryByRole('button', { name: /delete document/i })).not.toBeInTheDocument();
     expect(within(drawer).queryByRole('button', { name: /rename/i })).not.toBeInTheDocument();
+    // Ask-only access: only the owner can download the file.
+    expect(within(drawer).queryByRole('button', { name: /download/i })).not.toBeInTheDocument();
+    expect(within(drawer).getByText(/ask questions about it/i)).toBeInTheDocument();
+  });
+
+  it('lets the owner download their own document', async () => {
+    renderAt('/documents');
+    await userEvent.click((await screen.findAllByTestId('doc-row'))[0]);
+    const drawer = await screen.findByRole('dialog', { name: /annual report/i });
     expect(within(drawer).getByRole('button', { name: /download/i })).toBeInTheDocument();
+    expect(within(drawer).queryByRole('button', { name: /landing page/i })).not.toBeInTheDocument();
   });
 
   it('deletes only after confirmation (FR-011)', async () => {

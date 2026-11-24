@@ -28,6 +28,8 @@ class ChatSource(BaseModel):
     source_type: Literal["text", "ocr"] = "text"
     text: str
     score: float = Field(..., description="Similarity 0..1 (1 - cosine distance)")
+    # The sentence of `text` that supports the answer, for highlighting (None if nothing matched).
+    highlight: Optional[str] = None
 
 
 class ClaimCheck(BaseModel):
@@ -72,3 +74,13 @@ class ChatAnswer(BaseModel):
     injection_detected: bool = False
     # EP-06 (additive): set when the question compares two or more documents.
     comparison: Optional[Comparison] = None
+
+
+class PublicAskRequest(BaseModel):
+    """POST /api/v1/public/ask: a guest question on the landing page (no conversation, nothing stored)."""
+
+    question: str = Field(..., min_length=1, max_length=4000)
+
+
+class ShowcaseUpdate(BaseModel):
+    showcase: bool

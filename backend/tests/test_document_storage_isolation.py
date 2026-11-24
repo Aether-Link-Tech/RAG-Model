@@ -97,21 +97,28 @@ async def test_public_download_validates_against_original_owner(isolate_storage,
     )
 
     monkeypatch.setattr(documents_api, "_accessible_document", AsyncMock(return_value=public_doc))
-    response = await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_a)
+    monkeypatch.setattr(documents_api, "log_security_event", AsyncMock())
+
+    # Ask-only access: a non-owner never downloads a public document's file.
+    with pytest.raises(HTTPException) as exc_info:
+        await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_a)
+    assert exc_info.value.status_code == 404
+
+    # The owner downloads it from their own namespace.
+    response = await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_b)
     assert isinstance(response, StreamingResponse)
     chunks = [chunk async for chunk in response.body_iterator]
     assert b"".join(chunks) == b"public content"
     assert response.headers["content-length"] == str(len(b"public content"))
     assert 'attachment; filename="public.txt"' == response.headers["content-disposition"]
 
-    # If the public document's path is tampered to point into User A's directory, it must fail.
+    # If the document's path is tampered to point into User A's directory, even the owner gets 404.
     path_a = Path(build_storage_path(user_a.id, uuid.uuid4(), "trap.txt"))
     path_a.write_text("trap", encoding="utf-8")
     public_doc.file_path = str(path_a)
-    monkeypatch.setattr(documents_api, "log_security_event", AsyncMock())
 
     with pytest.raises(HTTPException) as exc_info:
-        await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_a)
+        await documents_api.download_document(_make_request(), public_doc.id, AsyncMock(), user_b)
     assert exc_info.value.status_code == 404
 
 

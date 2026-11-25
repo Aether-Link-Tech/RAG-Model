@@ -222,3 +222,56 @@ def test_excerpt_is_capped_and_centred_on_the_highlight():
     assert "Key rule: report within 24 hours." in out
     assert len(out) <= 122 and out.startswith("…") and out.endswith("…")
     assert source_highlight.excerpt("Short text.", None, 120) == "Short text."
+
+
+# ---------------------------------------------------------------- shared networks (Cloudflare Tunnel / campus Wi-Fi)
+def _browser():
+    """A separate browser (own cookie jar) on the same network: the test client always has one IP."""
+    import httpx
+
+    from backend.app.main import app
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+async def test_each_browser_on_one_network_gets_its_own_free_questions(library, qa_env, monkeypatch):
+    monkeypatch.setattr(settings, "PUBLIC_ASK_PER_MINUTE", 100)
+    monkeypatch.setattr(settings, "PUBLIC_ASK_PER_DAY", 2)
+    students = [_browser() for _ in range(5)]  # a classroom behind one public IP
+    try:
+        for student in students:
+            codes = [(await student.post("/api/v1/public/ask", json={"question": "library weekend opening"})).status_code
+                     for _ in range(3)]
+            assert codes == [200, 200, 429]  # 2 free each, then sign in; nobody uses up the others' questions
+    finally:
+        for student in students:
+            await student.aclose()
+
+
+async def test_network_ceiling_caps_cookie_clearing(library, qa_env, monkeypatch):
+    monkeypatch.setattr(settings, "PUBLIC_ASK_PER_MINUTE", 100)
+    monkeypatch.setattr(settings, "PUBLIC_ASK_PER_DAY", 5)
+    monkeypatch.setattr(settings, "PUBLIC_ASK_PER_IP_DAY", 3)
+    codes, last = [], None
+    for _ in range(4):  # a new cookie every time, like clearing cookies between questions
+        async with _browser() as fresh:
+            last = await fresh.post("/api/v1/public/ask", json={"question": "library weekend opening"})
+            codes.append(last.status_code)
+    assert codes == [200, 200, 200, 429]
+    assert "your network" in last.json()["detail"]
+
+
+async def test_visitor_cookie_is_anonymous_and_http_only(async_client, qa_env):
+    r = await async_client.get("/api/v1/public/limits")
+    cookie = r.headers["set-cookie"]
+    assert cookie.startswith("aether_guest=") and "HttpOnly" in cookie and "Path=/api/v1/public" in cookie
+    value = cookie.split(";")[0].split("=", 1)[1]
+    assert len(value) == 32 and int(value, 16) >= 0  # only a random id
+    again = await async_client.get("/api/v1/public/limits")
+    assert "set-cookie" not in again.headers  # the same browser keeps its id
+
+
+async def test_forged_visitor_cookie_is_replaced(qa_env):
+    async with _browser() as browser:
+        browser.cookies.set("aether_guest", "../../admin", domain="test", path="/api/v1/public")
+        r = await browser.get("/api/v1/public/limits")
+        assert r.headers["set-cookie"].startswith("aether_guest=") and "../" not in r.headers["set-cookie"]

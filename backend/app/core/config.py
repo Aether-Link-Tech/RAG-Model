@@ -124,6 +124,9 @@ class Settings(BaseConfig):
     # Guests get a few free questions per day (per IP); signing in removes the limit.
     PUBLIC_ASK_PER_MINUTE: int = int(os.getenv("PUBLIC_ASK_PER_MINUTE", "3"))
     PUBLIC_ASK_PER_DAY: int = int(os.getenv("PUBLIC_ASK_PER_DAY", "5"))
+    # Safety ceiling per IP: a whole classroom on one Wi-Fi shares one public IP.
+    PUBLIC_ASK_PER_IP_MINUTE: int = int(os.getenv("PUBLIC_ASK_PER_IP_MINUTE", "30"))
+    PUBLIC_ASK_PER_IP_DAY: int = int(os.getenv("PUBLIC_ASK_PER_IP_DAY", "150"))
     PUBLIC_QUESTION_MAX_CHARS: int = int(os.getenv("PUBLIC_QUESTION_MAX_CHARS", "500"))
     # Guests see an excerpt around the highlighted sentence, never a whole chunk (no document rebuild).
     PUBLIC_SOURCE_MAX_CHARS: int = int(os.getenv("PUBLIC_SOURCE_MAX_CHARS", "400"))

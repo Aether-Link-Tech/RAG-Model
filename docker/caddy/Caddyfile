@@ -6,6 +6,13 @@
 #   docker compose exec caddy caddy trust   (or import /data/caddy/pki/authorities/local/root.crt)
 {
 	admin off
+	# Cloudflare Tunnel: cloudflared reaches Caddy from a private address and sends the real visitor IP
+	# in CF-Connecting-IP. Only private (local) peers are trusted, and Caddy listens on 127.0.0.1 only
+	# (docker-compose.yml), so nobody on the network can fake this header.
+	servers {
+		trusted_proxies static private_ranges
+		client_ip_headers CF-Connecting-IP X-Forwarded-For
+	}
 }
 
 {$SITE_ADDRESS:localhost} {
@@ -22,6 +29,8 @@
 
 	# The frontend container serves the app and proxies /api to the backend.
 	reverse_proxy frontend:80 {
+		# The real visitor IP (per-IP guest limits, audit log), not the tunnel's address.
+		header_up X-Forwarded-For {client_ip}
 		header_up X-Forwarded-Proto https
 	}
 }

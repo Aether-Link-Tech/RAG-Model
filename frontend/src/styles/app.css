@@ -633,7 +633,8 @@
 
 @media (max-width: 640px) {
   .app-bar__inner { flex-wrap: wrap; gap: 10px; padding: 10px 0; }
-  .app-nav { order: 3; width: 100%; }
+  .app-nav { order: 3; width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .app-nav__link { flex: 0 0 auto; white-space: nowrap; }
   .app-user__email { display: none; }
   .page-hero { flex-direction: column; align-items: flex-start; }
   .doc-row { flex-wrap: wrap; }
@@ -736,4 +737,69 @@
   .collections-bar { flex-direction: column; }
   .collection-form input { width: 130px; }
   .audit-filters { grid-template-columns: 1fr; }
+}
+
+/* ---------- User health dashboard (FR-076) ---------- */
+.health-hero__actions { display: flex; align-items: center; gap: 12px; }
+.health-panel { padding: 18px; }
+.health-filters {
+  display: grid; grid-template-columns: minmax(220px, 1fr) 180px 160px; gap: 10px;
+  align-items: center; margin-bottom: 14px;
+}
+.health-filters select {
+  width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px;
+  background: white; color: var(--text); font: inherit; font-size: 14px;
+  transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
+}
+.health-filters select:focus { outline: 0; border-color: var(--blue); box-shadow: 0 0 0 4px rgb(22 119 255 / 12%); }
+.health-filters select:disabled { background: #f5f8fc; color: var(--muted); cursor: not-allowed; }
+
+.health-notice {
+  display: flex; align-items: flex-start; gap: 9px; margin-bottom: 14px; padding: 10px 12px;
+  border: 1px solid rgb(22 119 255 / 22%); border-radius: 10px; background: rgb(22 119 255 / 6%);
+  color: var(--navy-2); font-size: 13px; line-height: 1.45; animation: fade-up .3s var(--ease) both;
+}
+.health-notice svg { flex: 0 0 auto; margin-top: 1px; color: var(--blue); }
+.health-notice code { font-size: 12px; }
+.health-notice--error { border-color: rgb(220 38 38 / 25%); background: #fdeaec; color: #8f1d27; }
+.health-notice--error svg { color: var(--red); }
+
+.health-table th { padding: 0; }
+.health-table th.is-numeric, .health-table td.is-numeric { text-align: right; }
+.health-table td { vertical-align: middle; }
+.sort-button {
+  display: inline-flex; align-items: center; gap: 5px; width: 100%; padding: 11px 14px;
+  color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer;
+  transition: color .15s var(--ease);
+}
+.is-numeric .sort-button { justify-content: flex-end; }
+.sort-button svg { opacity: .45; transition: opacity .15s var(--ease); }
+.sort-button:hover, .sort-button.is-active { color: var(--blue); }
+.sort-button:hover svg, .sort-button.is-active svg { opacity: 1; }
+.sort-button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; border-radius: 6px; }
+
+.health-user { display: flex; align-items: center; gap: 11px; min-width: 220px; }
+.health-user__avatar {
+  width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 10px;
+  background: #e8f1ff; color: var(--blue-dark); font-size: 12px; font-weight: 800;
+}
+.health-user__email { display: block; max-width: 280px; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Quarantined accounts: red tint and a left marker so they stand out while scanning */
+.health-table tbody tr.is-quarantined { background: rgb(220 38 38 / 5%); box-shadow: inset 3px 0 0 var(--red); }
+.health-table tbody tr.is-quarantined:hover { background: rgb(220 38 38 / 8%); }
+.health-table tr.is-quarantined .health-user__avatar { background: #fdeaec; color: var(--red); }
+
+.storage-cell { display: inline-grid; justify-items: end; gap: 5px; min-width: 110px; font-variant-numeric: tabular-nums; }
+.storage-bar { width: 96px; height: 5px; overflow: hidden; border-radius: 99px; background: #eef3f9; }
+.storage-bar > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--cyan), var(--blue)); transition: width .5s var(--ease); }
+.is-quarantined .storage-bar > span { background: var(--red); }
+
+@media (max-width: 980px) {
+  .health-filters { grid-template-columns: 1fr 1fr; }
+  .health-filters .search { grid-column: 1 / -1; }
+}
+@media (max-width: 640px) {
+  .health-filters { grid-template-columns: 1fr; }
+  .health-hero__actions { width: 100%; justify-content: space-between; }
 }

@@ -7,6 +7,7 @@ import LoginPage from './pages/login';
 import DocumentsPage from './pages/documents';
 import VerifyEmailPage from './pages/verify-email';
 import AuditLogPage from './pages/audit-log';
+import UserHealthPage from './pages/user-health';
 import ChatPage from './pages/chat';
 import LandingPage from './pages/landing';
 import { GuestOnly, RequireAdmin, RequireAuth } from './routes/guards';
@@ -65,6 +66,14 @@ export function AppRoutes() {
             element={
               <RequireAdmin>
                 <AuditLogPage />
+              </RequireAdmin>
+            }
+          />
+          <Route
+            path="/admin/users"
+            element={
+              <RequireAdmin>
+                <UserHealthPage />
               </RequireAdmin>
             }
           />

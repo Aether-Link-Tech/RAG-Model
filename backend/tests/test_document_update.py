@@ -12,6 +12,7 @@ from backend.app.db.rls import configure_rls_context
 from backend.app.models.document import Document
 from backend.app.models.user import User
 from backend.app.services import clamav, document_ingest
+from backend.app.tasks import document_tasks
 from backend.tests.conftest import TestingSessionLocal
 
 
@@ -48,6 +49,17 @@ def reindex_calls(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def process_calls(monkeypatch):
+    calls = []
+
+    def record(document_id, user_id, user_role="user"):
+        calls.append((document_id, user_id, user_role))
+
+    monkeypatch.setattr(document_tasks.process_document, "delay", record)
+    return calls
+
+
 async def test_rename_keeps_type_and_returns_owner_view(async_client, test_user: User, reindex_calls):
     doc = await _upload(async_client, test_user, b"rename me", name="old.txt")
 
@@ -65,9 +77,10 @@ async def test_rename_cannot_change_file_type(async_client, test_user: User, rei
     assert r.status_code == 400
 
 
-async def test_replace_swaps_file_and_queues_reindex_as_owner(async_client, test_user: User, reindex_calls):
+async def test_replace_swaps_file_and_queues_reindex_as_owner(async_client, test_user: User, process_calls):
     doc = await _upload(async_client, test_user, b"version one", name="v.txt")
     old_path = Path((await _load(test_user, doc["id"])).file_path)
+    process_calls.clear()
 
     r = await async_client.put(
         f"/api/v1/documents/{doc['id']}",
@@ -81,7 +94,7 @@ async def test_replace_swaps_file_and_queues_reindex_as_owner(async_client, test
     assert stored.file_hash == hashlib.sha256(b"version two, longer").hexdigest()
     assert Path(stored.file_path).read_bytes() == b"version two, longer"
     assert not old_path.exists(), "old file must be removed after a successful replace"
-    assert reindex_calls == [(uuid.UUID(doc["id"]), test_user.id, test_user.role)]
+    assert process_calls == [(doc["id"], str(test_user.id), test_user.role)]
 
 
 async def test_other_users_private_doc_is_404(async_client, test_user: User, test_user_2: User, reindex_calls):

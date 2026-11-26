@@ -145,6 +145,19 @@ async def find_near_duplicate(db: AsyncSession, document: Document, sig: np.ndar
     return best
 
 
+async def check_text_for_near_duplicate(
+    db: AsyncSession, document: Document, content: str
+) -> Optional[np.ndarray]:
+    """Reject matching text and return its fingerprint, if it has indexable shingles."""
+    if not shingles(content):
+        return None
+    fingerprint = signature(content)
+    match = await find_near_duplicate(db, document, fingerprint)
+    if match is not None:
+        raise NearDuplicateError(match)
+    return fingerprint
+
+
 async def store_fingerprint(db: AsyncSession, document: Document, sig: np.ndarray) -> None:
     """Replace the document's fingerprint and LSH bands (call inside the indexing transaction)."""
     await db.execute(delete(DocumentFingerprintBand).where(DocumentFingerprintBand.document_id == document.id))

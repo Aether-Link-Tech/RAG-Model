@@ -1,7 +1,9 @@
+import asyncio
 import hashlib
 import os
 import shutil
 import subprocess
+import threading
 import uuid
 import pytest
 import pytest_asyncio
@@ -19,6 +21,7 @@ from backend.app.db.session import get_db
 from backend.app.main import app
 from backend.app.models.document import Document
 from backend.app.models.user import User
+from backend.app.tasks import document_tasks
 
 # Test engine with NullPool using the non-superuser `rag_app` LOGIN role
 test_engine = create_async_engine(
@@ -133,6 +136,42 @@ def stub_rag_indexing(monkeypatch):
         "delete_user_private_knowledge",
         _noop_delete_user_private_knowledge,
     )
+
+
+@pytest.fixture(autouse=True)
+def run_document_tasks_synchronously(monkeypatch):
+    """Run dispatched indexing in a separate event loop for deterministic API tests."""
+    def _run_task(document_id: str, user_id: str, user_role: str = "user"):
+        errors: list[BaseException] = []
+        task_index_document = document_tasks.index_document
+
+        async def _process() -> None:
+            try:
+                await document_tasks._process_document(
+                    uuid.UUID(document_id),
+                    uuid.UUID(user_id),
+                    user_role,
+                )
+            finally:
+                await document_tasks.worker_engine.dispose()
+
+        def _thread_target() -> None:
+            document_tasks.index_document = documents_api.index_document
+            try:
+                asyncio.run(_process())
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                document_tasks.index_document = task_index_document
+
+        thread = threading.Thread(target=_thread_target)
+        thread.start()
+        thread.join()
+        if errors:
+            raise errors[0]
+        return None
+
+    monkeypatch.setattr(document_tasks.process_document, "delay", _run_task)
 
 
 @pytest.fixture(autouse=True)

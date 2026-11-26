@@ -38,10 +38,10 @@ services:
     ports:
       - "127.0.0.1:8001:8000"
     volumes:
-      - chroma_data:/chroma/chroma
+      - chroma_data:/data
     environment:
       - IS_PERSISTENT=TRUE
-      - PERSIST_DIRECTORY=/chroma/chroma
+      - PERSIST_DIRECTORY=/data
       - ANONYMIZED_TELEMETRY=FALSE
 
   parser-sandbox:

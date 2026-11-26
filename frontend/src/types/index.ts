@@ -60,5 +60,26 @@ export interface AuditLogPage {
   offset: number;
 }
 
+// FR-076 admin per-user health (GET /api/v1/admin/users/health, AL-272).
+// Metrics are null when the health endpoint isn't deployed and the page falls back to /admin/users.
+export type AccountStatus = 'active' | 'quarantined';
+
+export interface UserHealth {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: string;
+  status: AccountStatus | null;
+  quarantined: boolean;
+  document_count: number | null;
+  storage_bytes: number | null;
+  last_activity: string | null;
+}
+
+export interface UserHealthReport {
+  users: UserHealth[];
+  metricsAvailable: boolean;
+}
+
 export * from './document';
 export * from './chat';

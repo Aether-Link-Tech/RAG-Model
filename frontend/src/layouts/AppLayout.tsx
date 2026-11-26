@@ -1,7 +1,7 @@
 // Signed-in shell: top bar with navigation, user chip and logout (FR-003 UI).
 import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { FileText, LogOut, MessageSquareText, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { Activity, FileText, LogOut, MessageSquareText, ShieldAlert, ShieldCheck } from 'lucide-react';
 import Logo from '../components/Logo';
 import { useToast } from '../components/Toast';
 import { useSession } from '../hooks/useSession';
@@ -35,9 +35,14 @@ export default function AppLayout() {
               <MessageSquareText size={16} /> Ask
             </NavLink>
             {user?.role === 'admin' && (
-              <NavLink to="/admin/audit" className={({ isActive }) => `app-nav__link${isActive ? ' is-active' : ''}`}>
-                <ShieldAlert size={16} /> Audit log
-              </NavLink>
+              <>
+                <NavLink to="/admin/users" className={({ isActive }) => `app-nav__link${isActive ? ' is-active' : ''}`}>
+                  <Activity size={16} /> User health
+                </NavLink>
+                <NavLink to="/admin/audit" className={({ isActive }) => `app-nav__link${isActive ? ' is-active' : ''}`}>
+                  <ShieldAlert size={16} /> Audit log
+                </NavLink>
+              </>
             )}
           </nav>
           <div className="app-user">

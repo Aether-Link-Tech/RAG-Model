@@ -10,6 +10,14 @@ export function formatBytes(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
+// Storage is always shown in MB on the admin dashboard (FR-076), so values compare at a glance.
+export function formatMegabytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb === 0) return '0 MB';
+  if (mb < 0.1) return '< 0.1 MB';
+  return `${mb.toLocaleString(undefined, { maximumFractionDigits: mb < 100 ? 1 : 0 })} MB`;
+}
+
 export function formatDate(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }

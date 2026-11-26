@@ -142,6 +142,12 @@ services:
     image: rag-backend:latest
     container_name: rag_worker
     restart: unless-stopped
+    # Indexing (sandbox parsing, OCR, embeddings) is CPU- and memory-heavy: cap it like the backend.
+    deploy:
+      resources:
+        limits:
+          cpus: "${WORKER_CPUS:-4}"
+          memory: ${WORKER_MEMORY:-4g}
     healthcheck:
       disable: true
     depends_on:
@@ -189,6 +195,8 @@ services:
       - backend.app.core.celery_app:celery_app
       - worker
       - --loglevel=info
+      # Each worker process loads the OCR model (~1 GB). Celery's default is one process per CPU core.
+      - --concurrency=${WORKER_CONCURRENCY:-1}
 
   frontend:
     build:

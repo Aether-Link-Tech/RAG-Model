@@ -118,6 +118,44 @@ async def _process_document(
             clear_rls_context(db)
 
 
+GAVE_UP_MESSAGE = "Processing failed after several attempts. Please upload the document again."
+
+
+async def _mark_failed(document_id: uuid.UUID, user_id: uuid.UUID, user_role: str) -> None:
+    """The job gave up (retries exhausted or an error escaped): never leave the document 'processing'."""
+    async with WorkerSessionLocal() as db:
+        try:
+            await configure_rls_context(db, user_id, user_role)
+            document = await db.get(Document, document_id)
+            if document is not None and document.status not in ("indexed", "failed"):
+                document.status = "failed"
+                document.error_message = GAVE_UP_MESSAGE
+                await db.commit()
+        finally:
+            clear_rls_context(db)
+
+
+async def _mark_failed_and_dispose(document_id: uuid.UUID, user_id: uuid.UUID, user_role: str) -> None:
+    try:
+        await _mark_failed(document_id, user_id, user_role)
+    finally:
+        await worker_engine.dispose()
+
+
+class ProcessDocumentTask(celery_app.Task):
+    """Runs after the final attempt fails (Celery calls on_failure only when no retry is left)."""
+
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        try:
+            document_id = args[0] if args else kwargs["document_id"]
+            user_id = args[1] if len(args) > 1 else kwargs["user_id"]
+            user_role = args[2] if len(args) > 2 else kwargs.get("user_role", "user")
+            asyncio.run(_mark_failed_and_dispose(uuid.UUID(document_id), uuid.UUID(user_id), user_role))
+            logger.error("Indexing of document %s gave up: %s", document_id, type(exc).__name__)
+        except Exception:
+            logger.exception("Could not mark document as failed after the indexing job gave up")
+
+
 async def _process_and_dispose(
     document_id: uuid.UUID,
     user_id: uuid.UUID,
@@ -130,6 +168,7 @@ async def _process_and_dispose(
 
 
 @celery_app.task(
+    base=ProcessDocumentTask,
     name="backend.app.tasks.document_tasks.process_document",
     acks_late=True,
     reject_on_worker_lost=True,

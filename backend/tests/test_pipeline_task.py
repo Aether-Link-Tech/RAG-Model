@@ -421,3 +421,50 @@ async def test_replace_returns_503_and_marks_document_failed_when_queueing_fails
     assert document_response.status_code == 200, document_response.text
     assert document_response.json()["status"] == "failed"
     assert document_response.json()["error_message"] == "Could not queue the indexing job"
+
+
+def test_task_marks_document_failed_when_retries_run_out(mock_task_session, monkeypatch):
+    """Ollama down for every attempt: the document must end 'failed', never stay 'processing'."""
+    from backend.app.services.embedding import EmbeddingError
+
+    document_id = uuid.uuid4()
+    document = _document(document_id)
+    document.status = "processing"
+    mock_task_session(document)
+    attempts = []
+
+    async def embedding_down(db, actual_document):
+        attempts.append(1)
+        raise EmbeddingError("Ollama unavailable")
+
+    monkeypatch.setattr(document_tasks, "index_document", embedding_down)
+
+    result = document_tasks.process_document.apply(args=[str(document_id), str(uuid.uuid4()), "user"])
+
+    assert result.failed()
+    assert len(attempts) == 1 + document_tasks.process_document.max_retries
+    assert document.status == "failed"
+    assert document.error_message == document_tasks.GAVE_UP_MESSAGE
+    assert "Ollama" not in document.error_message
+
+
+def test_give_up_never_overwrites_a_finished_document(mock_task_session):
+    import asyncio
+
+    document = _document(uuid.uuid4())
+    document.status = "indexed"
+    mock_task_session(document)
+    asyncio.run(document_tasks._mark_failed(document.id, uuid.uuid4(), "user"))
+    assert document.status == "indexed"
+
+
+def test_worker_takes_one_job_at_a_time():
+    from backend.app.core.celery_app import celery_app
+
+    assert celery_app.conf.worker_prefetch_multiplier == 1
+    compose = Path(__file__).resolve().parents[2].joinpath("docker-compose.yml").read_text(encoding="utf-8")
+    import re
+
+    worker = re.split(r"\n  (?=\S)", compose.split("container_name: rag_worker", 1)[1], maxsplit=1)[0]
+    assert "--concurrency=${WORKER_CONCURRENCY:-1}" in worker
+    assert "memory: ${WORKER_MEMORY:-4g}" in worker

@@ -9,7 +9,7 @@ import FileIcon from '../components/FileIcon';
 import { StatusBadge, VisibilityBadge } from '../components/Badges';
 import { useToast } from '../components/Toast';
 import { useSession } from '../hooks/useSession';
-import { listDocuments } from '../services/documentService';
+import { listDocuments, retryDocument } from '../services/documentService';
 import { listCollections } from '../services/collectionService';
 import { getErrorMessage } from '../services/api';
 import { formatBytes, relativeTime } from '../utils/format';
@@ -33,6 +33,7 @@ export default function DocumentsPage() {
   const [filter, setFilter] = useState<Filter>('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [collection, setCollection] = useState<CollectionFilter>('all');
 
@@ -101,6 +102,20 @@ export default function DocumentsPage() {
       const rest = (list ?? []).filter((d) => d.id !== doc.id);
       return [doc, ...rest];
     });
+  }
+
+  async function retry(doc: Document) {
+    setRetryingId(doc.id);
+    try {
+      const updated = await retryDocument(doc.id);
+      upsert(updated);
+      await load(true);
+      toast.success('Retry queued', `${doc.filename} is being processed again.`);
+    } catch (error) {
+      toast.error('Could not retry document', getErrorMessage(error, 'Please try again.'));
+    } finally {
+      setRetryingId(null);
+    }
   }
 
   return (
@@ -206,7 +221,7 @@ export default function DocumentsPage() {
           {docs && visible.length > 0 && (
             <ul className="doc-list">
               {visible.map((doc, i) => (
-                <li key={doc.id} style={{ animationDelay: `${Math.min(i, 12) * 45}ms` }}>
+                <li key={doc.id} className="doc-list__item" style={{ animationDelay: `${Math.min(i, 12) * 45}ms` }}>
                   <button
                     type="button"
                     className={`doc-row${selectedId === doc.id ? ' is-selected' : ''}`}
@@ -226,6 +241,18 @@ export default function DocumentsPage() {
                       <StatusBadge status={doc.status} />
                     </span>
                   </button>
+                  {doc.status === 'failed' && doc.is_owner && (
+                    <button
+                      type="button"
+                      className="button button--ghost doc-row__retry"
+                      aria-label={`Retry processing ${doc.filename}`}
+                      disabled={retryingId !== null}
+                      onClick={() => void retry(doc)}
+                    >
+                      <RefreshCw size={15} className={retryingId === doc.id ? 'spin' : ''} />
+                      {retryingId === doc.id ? 'Retrying' : 'Retry'}
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>

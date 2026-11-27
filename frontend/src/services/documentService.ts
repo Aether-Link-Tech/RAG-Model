@@ -90,6 +90,21 @@ export async function replaceDocument(id: string, file: File, onProgress?: (perc
   return data;
 }
 
+export async function retryDocument(id: string): Promise<Document> {
+  if (USE_MOCK) {
+    const doc = mockDocuments.find((d) => d.id === id);
+    if (!doc) throw new Error('Document not found');
+    Object.assign(doc, {
+      status: 'processing' as const,
+      error_message: null,
+      updated_at: new Date().toISOString(),
+    });
+    return { ...doc };
+  }
+  const { data } = await api.post<Document>(`/documents/${id}/retry`);
+  return data;
+}
+
 export async function deleteDocument(id: string): Promise<void> {
   if (USE_MOCK) {
     const index = mockDocuments.findIndex((d) => d.id === id);

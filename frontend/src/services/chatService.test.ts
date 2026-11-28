@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ask, ChatError } from './chatService';
+import api from './api';
+import { ask, ChatError, deleteConversation, getConversation, listConversations } from './chatService';
 import { session } from './session';
-import type { ChatAnswer } from '../types';
+import type { ChatAnswer, ConversationDetail, ConversationSummary } from '../types';
 
 const final: ChatAnswer = {
   conversation_id: 'c1', message_id: 'm1', answer: 'Final answer [1].',
@@ -86,5 +87,93 @@ describe('chatService.ask', () => {
     expect(session.isAuthenticated()).toBe(false);
     expect(expired).toHaveBeenCalled();
     window.removeEventListener('auth:expired', expired);
+  });
+
+  it('stops emitting tokens or resolving when aborted mid-stream', async () => {
+    const controller = new AbortController();
+    const tokens: string[] = [];
+    const done = `event: done\ndata: ${JSON.stringify(final)}\n\n`;
+    const body = new ReadableStream<Uint8Array>({
+      pull(streamController) {
+        streamController.enqueue(new TextEncoder().encode('event: token\ndata: {"text":"First"}\n\n'));
+        controller.abort();
+        streamController.enqueue(new TextEncoder().encode(done));
+        streamController.close();
+      },
+    });
+    fetchMock.mockResolvedValue(new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+
+    await expect(ask({ question: 'hi' }, { signal: controller.signal, onToken: (t) => tokens.push(t) })).rejects.toThrow(
+      /aborted/i,
+    );
+    expect(tokens).toEqual([]);
+  });
+});
+
+describe('chatService conversation history APIs', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('lists, retrieves, and deletes conversations through the authenticated API client', async () => {
+    const summaries: ConversationSummary[] = [
+      {
+        id: 'conv-1',
+        title: 'Leave policy question',
+        created_at: '2026-11-26T08:00:00Z',
+        updated_at: '2026-11-26T08:01:00Z',
+        message_count: 2,
+      },
+    ];
+    const detail: ConversationDetail = {
+      ...summaries[0],
+      messages: [
+        {
+          id: 'u1',
+          conversation_id: 'conv-1',
+          role: 'user',
+          content: 'Leave policy question',
+          sources: [],
+          insufficient: false,
+          uncertain: false,
+          uncertain_reason: null,
+          claims: [],
+          removed_claims: 0,
+          injection_detected: false,
+          comparison: null,
+          created_at: '2026-11-26T08:00:00Z',
+        },
+        {
+          id: 'a1',
+          conversation_id: 'conv-1',
+          role: 'assistant',
+          content: 'Final answer [1].',
+          sources: final.sources,
+          insufficient: false,
+          uncertain: false,
+          uncertain_reason: null,
+          claims: [],
+          removed_claims: 0,
+          injection_detected: false,
+          comparison: null,
+          created_at: '2026-11-26T08:00:01Z',
+        },
+      ],
+    };
+
+    const getSpy = vi.spyOn(api, 'get');
+    const delSpy = vi.spyOn(api, 'delete');
+    getSpy.mockResolvedValueOnce({ data: summaries });
+    getSpy.mockResolvedValueOnce({ data: detail });
+    delSpy.mockResolvedValueOnce({ status: 204 });
+
+    expect(await listConversations()).toEqual(summaries);
+    expect(getSpy).toHaveBeenNthCalledWith(1, '/chat/conversations');
+
+    expect(await getConversation('conv-1')).toEqual(detail);
+    expect(getSpy).toHaveBeenNthCalledWith(2, '/chat/conversations/conv-1');
+
+    await deleteConversation('conv-1');
+    expect(delSpy).toHaveBeenCalledWith('/chat/conversations/conv-1');
   });
 });

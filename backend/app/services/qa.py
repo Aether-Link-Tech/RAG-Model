@@ -20,7 +20,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.schemas.chat import ChatAnswer, ChatSource
-from backend.app.services import answer_confidence, answer_verification, grounded_prompt, llm, multi_doc, prompt_injection, source_highlight
+from backend.app.services import (
+    answer_confidence,
+    answer_verification,
+    grounded_prompt,
+    llm,
+    multi_doc,
+    prompt_injection,
+    query_intent,
+    source_highlight,
+)
 from backend.app.services.context_window import Passage, select_passages
 from backend.app.services.embedding import embed_query
 from backend.app.services.vector_store import RetrievedChunk, query_authorized_chunks, query_showcase_chunks
@@ -37,6 +46,7 @@ class PreparedQuestion:
     messages: list[dict[str, str]]   # empty when there is nothing relevant to answer from
     injection_detected: bool = False  # FR-051: instruction-like text was removed from a passage
     comparison: bool = False          # EP-06: passages from several documents are compared
+    conversational: bool = False      # Greeting / thanks / farewell: skip retrieval & claim checks
 
 
 def _to_passage(hit: RetrievedChunk) -> Passage:
@@ -80,9 +90,26 @@ def _relevant(hits: Sequence[RetrievedChunk]) -> list[Passage]:
     return [_to_passage(h) for h in relevant]
 
 
+def prepare_conversational(
+    question: str,
+    conversation_id: uuid.UUID | None = None,
+) -> PreparedQuestion:
+    """Simple greetings, check-ins, thanks, and farewells bypass retrieval and grounding checks."""
+    return PreparedQuestion(
+        question=question,
+        conversation_id=conversation_id or uuid.uuid4(),
+        message_id=uuid.uuid4(),
+        passages=[],
+        messages=grounded_prompt.build_conversational_messages(question, settings.LLM_MODEL),
+        conversational=True,
+    )
+
+
 async def prepare_showcase(db: AsyncSession, question: str) -> PreparedQuestion:
     """Landing page guests: the same pipeline, but retrieval only from showcase documents.
     `db` must carry the guest RLS context."""
+    if query_intent.is_conversational(question):
+        return prepare_conversational(question)
     fetch = settings.QA_MULTIDOC_FETCH if multi_doc.is_comparison(question) else settings.QA_RETRIEVAL_K
     vector = await embed_query(question)
     hits = await query_showcase_chunks(db=db, query_embedding=vector, n_results=fetch)
@@ -97,6 +124,8 @@ async def prepare(
     include_public: bool = True,
     include_private: bool = True,
 ) -> PreparedQuestion:
+    if query_intent.is_conversational(question):
+        return prepare_conversational(question, conversation_id)
     fetch = settings.QA_MULTIDOC_FETCH if multi_doc.is_comparison(question) else settings.QA_RETRIEVAL_K
     found = await retrieve(db, user_id, question, include_public, include_private, n_results=fetch)
     return prepare_from_passages(question, found, conversation_id)
@@ -177,6 +206,19 @@ def insufficient_answer(prepared: PreparedQuestion) -> ChatAnswer:
 def finalize(prepared: PreparedQuestion, raw_answer: str) -> ChatAnswer:
     """Turn the model's raw text into the API answer: markers checked, sources, confidence."""
     text = grounded_prompt.strip_reasoning(raw_answer)
+    if prepared.conversational:
+        text = grounded_prompt.drop_invalid_markers(text, 0).strip()
+        if not text or grounded_prompt.is_insufficient(text):
+            text = grounded_prompt.DEFAULT_CONVERSATIONAL_REPLY
+        return ChatAnswer(
+            conversation_id=prepared.conversation_id,
+            message_id=prepared.message_id,
+            answer=text,
+            sources=[],
+            insufficient=False,
+            uncertain=False,
+            uncertain_reason=None,
+        )
     if not prepared.passages or not text or grounded_prompt.is_insufficient(text):
         return insufficient_answer(prepared)
 
@@ -204,6 +246,11 @@ async def complete_answer(prepared: PreparedQuestion, raw_answer: str) -> ChatAn
     with claim-to-passage links (FR-049 / FR-050 / FR-044), and the EP-06 comparison (FR-035)."""
     result = finalize(prepared, raw_answer)
     result.injection_detected = prepared.injection_detected
+    if prepared.conversational:
+        if prompt_injection.answer_is_compromised(result.answer):
+            logger.warning("Answer %s withheld: looks like injected output", prepared.message_id)
+            return _updated(result, answer=grounded_prompt.DEFAULT_CONVERSATIONAL_REPLY, sources=[], claims=[])
+        return result
     analysis = await multi_doc.compare(prepared.passages) if prepared.comparison else None
     if result.insufficient:
         # A small model often declines "do they agree?" although the analysis has the answer.

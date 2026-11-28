@@ -7,6 +7,7 @@ POST /api/v1/chat/ask
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -84,3 +85,36 @@ class PublicAskRequest(BaseModel):
 
 class ShowcaseUpdate(BaseModel):
     showcase: bool
+
+
+class ConversationSummary(BaseModel):
+    id: uuid.UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int = 0
+
+
+class ConversationMessage(BaseModel):
+    id: uuid.UUID
+    conversation_id: uuid.UUID
+    role: Literal["user", "assistant", "system"]
+    content: str
+    sources: list[ChatSource] = []
+    insufficient: bool = False
+    uncertain: bool = False
+    uncertain_reason: Optional[str] = None
+    claims: list[ClaimCheck] = []
+    removed_claims: int = 0
+    injection_detected: bool = False
+    comparison: Optional[Comparison] = None
+    created_at: datetime
+
+
+class ConversationDetail(BaseModel):
+    id: uuid.UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int = 0
+    messages: list[ConversationMessage] = []

@@ -238,8 +238,11 @@
 /* ---------- document rows ---------- */
 .doc-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .doc-list > li { animation: fade-up 450ms var(--ease) both; }
+.doc-list__item { display: flex; align-items: center; gap: 6px; }
 
 .doc-row {
+  flex: 1;
+  min-width: 0;
   width: 100%;
   display: flex;
   align-items: center;
@@ -259,6 +262,7 @@
 .doc-row__main strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .doc-row__main .muted { font-size: 12.5px; }
 .doc-row__badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.doc-row__retry { flex: 0 0 auto; min-height: 38px; padding: 7px 10px; }
 
 .doc-row--skeleton { cursor: default; }
 .skeleton {
@@ -638,6 +642,8 @@
   .app-user__email { display: none; }
   .page-hero { flex-direction: column; align-items: flex-start; }
   .doc-row { flex-wrap: wrap; }
+  .doc-list__item { flex-wrap: wrap; }
+  .doc-row__retry { margin-left: 51px; }
   .doc-row__badges { width: 100%; justify-content: flex-start; padding-left: 51px; }
   .drawer__facts, .drawer__row, .password-rules { grid-template-columns: 1fr; }
 }

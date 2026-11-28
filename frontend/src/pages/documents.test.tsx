@@ -14,6 +14,7 @@ vi.mock('../services/documentService', () => ({
   downloadDocument: vi.fn(),
   renameDocument: vi.fn(),
   replaceDocument: vi.fn(),
+  retryDocument: vi.fn(),
   publishDocument: vi.fn(),
 }));
 vi.mock('../services/authService', () => ({
@@ -92,6 +93,52 @@ describe('documents page', () => {
     await userEvent.click((await screen.findAllByTestId('doc-row'))[2]);
     const drawer = await screen.findByRole('dialog', { name: /notes\.txt/i });
     expect(within(drawer).getByText(/no extractable text/i)).toBeInTheDocument();
+  });
+
+  it('retries an owned failed document and refreshes its status', async () => {
+    const retried = doc({ id: 'c', filename: 'Notes.txt', status: 'processing', error_message: null });
+    vi.mocked(docs.listDocuments)
+      .mockResolvedValueOnce([...DOCS])
+      .mockResolvedValueOnce([DOCS[0], DOCS[1], retried]);
+    vi.mocked(docs.retryDocument).mockResolvedValue(retried);
+    renderAt('/documents');
+    await screen.findAllByTestId('doc-row');
+
+    await userEvent.click(screen.getByRole('button', { name: /retry processing notes\.txt/i }));
+
+    await waitFor(() => expect(docs.retryDocument).toHaveBeenCalledWith('c'));
+    await waitFor(() => {
+      const rows = screen.getAllByTestId('doc-row');
+      expect(within(rows.find((row) => row.textContent?.includes('Notes.txt'))!).getByText('Processing')).toBeInTheDocument();
+    });
+    expect(docs.listDocuments).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('button', { name: /retry processing notes\.txt/i })).not.toBeInTheDocument();
+  });
+
+  it('does not offer retry for a failed public document owned by someone else', async () => {
+    vi.mocked(docs.listDocuments).mockResolvedValue([
+      doc({ id: 'public-failed', status: 'failed', visibility: 'public', is_owner: false, user_id: null }),
+    ]);
+    renderAt('/documents');
+    await screen.findByTestId('doc-row');
+
+    expect(screen.queryByRole('button', { name: /retry processing/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps failed document retry available when queueing fails', async () => {
+    vi.mocked(docs.retryDocument).mockRejectedValue(
+      Object.assign(new Error('x'), {
+        isAxiosError: true,
+        response: { status: 503, data: { detail: 'Document retry could not be queued. Please try again.' } },
+      }),
+    );
+    renderAt('/documents');
+    await screen.findAllByTestId('doc-row');
+
+    await userEvent.click(screen.getByRole('button', { name: /retry processing notes\.txt/i }));
+
+    expect(await screen.findByText(/could not retry document/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /retry processing notes\.txt/i })).toBeInTheDocument();
   });
 
   it('hides owner actions on documents shared by others', async () => {

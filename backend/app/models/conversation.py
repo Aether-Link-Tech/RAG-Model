@@ -40,8 +40,8 @@ class Message(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    # Source chunks cited by an assistant answer: [{document_id, chunk_id, ...}]
-    citations: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # Source chunks and answer metadata cited by an assistant answer (JSONB)
+    citations: Mapped[Optional[list | dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

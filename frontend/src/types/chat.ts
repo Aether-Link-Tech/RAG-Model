@@ -15,6 +15,7 @@ export interface ChatSource {
   section: string | null;
   source_type: 'text' | 'ocr';
   text: string;
+  highlight?: string | null;
   score: number; // 0..1
 }
 
@@ -56,4 +57,37 @@ export interface ChatAnswer {
   removed_claims: number;
   injection_detected: boolean;
   comparison: Comparison | null;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ConversationMessage {
+  id: string;
+  conversation_id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  sources: ChatSource[];
+  insufficient: boolean;
+  uncertain: boolean;
+  uncertain_reason: string | null;
+  claims: ClaimCheck[];
+  removed_claims: number;
+  injection_detected: boolean;
+  comparison: Comparison | null;
+  created_at: string;
+}
+
+export interface ConversationDetail {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  messages: ConversationMessage[];
 }

@@ -17,6 +17,13 @@ INSUFFICIENT_MESSAGE = (
     "The uploaded documents do not contain enough information to answer this question."
 )
 
+CONVERSATIONAL_SYSTEM_PROMPT = """You are Aether, a helpful document Q&A assistant.
+The user sent a brief conversational message (such as a greeting, check-in, thanks, or farewell) rather than a question about their documents.
+Reply naturally, warmly, and concisely in one short sentence (at most two brief sentences).
+Do not invent document facts and do not use citation markers like [1]."""
+
+DEFAULT_CONVERSATIONAL_REPLY = "Hello! How can I help you with your documents today?"
+
 SYSTEM_PROMPT = f"""You are Aether, an assistant that answers questions using ONLY the passages provided.
 
 Rules:
@@ -71,6 +78,13 @@ def build_messages(question: str, passages: Sequence[Passage], model: str = "",
     user = f"<context>\n{context}\n</context>\n\nQuestion: {question.strip()}{no_think_suffix(model)}"
     system = SYSTEM_PROMPT + (COMPARISON_RULES if comparison else "")
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_conversational_messages(message: str, model: str = "") -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": CONVERSATIONAL_SYSTEM_PROMPT},
+        {"role": "user", "content": f"{message.strip()}{no_think_suffix(model)}"},
+    ]
 
 
 def strip_reasoning(text: str) -> str:

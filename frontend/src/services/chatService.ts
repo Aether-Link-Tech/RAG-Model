@@ -4,10 +4,15 @@
 // axios cannot read a streaming body in the browser, so this uses fetch with the same
 // Bearer token / refresh rules as services/api.ts.
 import { API_URL, USE_MOCK } from './config';
-import { refreshSession } from './api';
+import api, { getErrorMessage, refreshSession, statusOf } from './api';
 import { session } from './session';
 import { mockDocuments, wait } from './mockData';
-import type { ChatAnswer, ChatAskRequest } from '../types';
+import type {
+  ChatAnswer,
+  ChatAskRequest,
+  ConversationDetail,
+  ConversationSummary,
+} from '../types';
 
 export class ChatError extends Error {
   constructor(
@@ -101,6 +106,7 @@ export async function ask(request: ChatAskRequest, { onToken, signal }: AskHandl
   // A proxy may hand back plain JSON instead of a stream; accept both.
   if (!response.headers.get('content-type')?.includes('text/event-stream') || !response.body) {
     const answer = (await response.json()) as ChatAnswer;
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     onToken?.(answer.answer);
     return answer;
   }
@@ -112,6 +118,7 @@ export async function ask(request: ChatAskRequest, { onToken, signal }: AskHandl
 
   for (;;) {
     const { value, done } = await reader.read();
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     buffer += decoder.decode(value, { stream: !done });
 
     let boundary = buffer.search(/\r?\n\r?\n/);
@@ -137,6 +144,39 @@ export async function ask(request: ChatAskRequest, { onToken, signal }: AskHandl
   throw new ChatError(
     streamed ? 'The answer was cut off. Please try again.' : 'The server closed the connection before answering.',
   );
+}
+
+export async function listConversations(): Promise<ConversationSummary[]> {
+  if (USE_MOCK) return [];
+  try {
+    const { data } = await api.get<ConversationSummary[]>('/chat/conversations');
+    return data;
+  } catch (error) {
+    throw new ChatError(getErrorMessage(error, 'Unable to load conversations.'), statusOf(error));
+  }
+}
+
+export async function getConversation(conversationId: string): Promise<ConversationDetail> {
+  if (USE_MOCK) {
+    throw new ChatError('Conversation not found', 404);
+  }
+  try {
+    const { data } = await api.get<ConversationDetail>(
+      `/chat/conversations/${encodeURIComponent(conversationId)}`,
+    );
+    return data;
+  } catch (error) {
+    throw new ChatError(getErrorMessage(error, 'Unable to load conversation history.'), statusOf(error));
+  }
+}
+
+export async function deleteConversation(conversationId: string): Promise<void> {
+  if (USE_MOCK) return;
+  try {
+    await api.delete(`/chat/conversations/${encodeURIComponent(conversationId)}`);
+  } catch (error) {
+    throw new ChatError(getErrorMessage(error, 'Unable to delete conversation.'), statusOf(error));
+  }
 }
 
 // ---------- demo mode (VITE_USE_MOCK=true) ----------

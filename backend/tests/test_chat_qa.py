@@ -15,8 +15,18 @@ from sqlalchemy import text
 from backend.app.api.v1 import documents as documents_api
 from backend.app.core.config import settings
 from backend.app.core.security import create_access_token
+from backend.app.models.conversation import Conversation, Message
 from backend.app.models.user import User
-from backend.app.services import answer_confidence, answer_verification, grounded_prompt, llm, prompt_injection, qa
+from backend.app.services import (
+    answer_confidence,
+    answer_verification,
+    conversation_store,
+    grounded_prompt,
+    llm,
+    prompt_injection,
+    qa,
+    query_intent,
+)
 from backend.app.services import context_window
 from backend.app.services.context_window import Passage, count_tokens, select_passages, truncate_to_tokens
 from backend.app.services.document_ingest import index_document
@@ -220,7 +230,17 @@ def qa_env(monkeypatch, chroma_client, fake_embeddings, require_postgres):
     async def fake_complete(messages, retries=2):
         """A faithful model: repeats the first passage it was given, citing it."""
         calls.append(messages)
-        first_passage = messages[1]["content"].split("\n")[2]
+        user_msg = messages[1]["content"]
+        if "<context>" not in user_msg:
+            low = user_msg.lower()
+            if "thank" in low or low in ("thx", "ty"):
+                return "You're welcome! Let me know if you have any questions about your documents."
+            if "bye" in low or "farewell" in low or "good night" in low or "see you" in low:
+                return "Goodbye! Feel free to come back anytime."
+            if "morning" in low:
+                return "Good morning! How can I help you with your documents today?"
+            return "Hello! How can I help you with your documents today?"
+        first_passage = user_msg.split("\n")[2]
         return f"{first_passage.rstrip('.')} [1]."
 
     monkeypatch.setattr(llm, "complete", fake_complete)
@@ -601,3 +621,388 @@ async def test_declined_answer_stays_declined_without_a_close_sentence(monkeypat
     prepared = _prepared([_p(1, "Remote workers must connect through the university VPN, called FIU-Connect.")])
     prepared.question = "How much does lunch cost in the cafeteria"
     assert (await qa.complete_answer(prepared, grounded_prompt.INSUFFICIENT_MARKER)).insufficient
+
+
+# ================================================================ Conversational greetings vs RAG routing
+@pytest.mark.parametrize("greeting", [
+    "hi",
+    "Hi!",
+    "hello",
+    "hey",
+    "good morning",
+    "good afternoon",
+    "good evening",
+    "how are you?",
+    "hey, how are you?",
+    "hi how's it going?",
+    "thanks",
+    "thank you so much!",
+    "got it, thanks!",
+    "goodbye",
+    "see you later!",
+    "thanks, goodbye!",
+    "hiii",
+    "hellooo",
+])
+def test_conversational_greetings_are_classified_as_conversational(greeting):
+    assert query_intent.is_conversational(greeting) is True
+    assert query_intent.classify_intent(greeting) == query_intent.QueryIntent.CONVERSATIONAL
+
+
+@pytest.mark.parametrize("document_query", [
+    "Hi, what does the uploaded document say about PostgreSQL?",
+    "Good morning, explain the authentication process in the document.",
+    "Hello, what is the retention period?",
+    "Hi, explain the uploaded document",
+    "Hi explain the uploaded document",
+    "Good morning, what does the document say about security?",
+    "Hey, how are you? When do Fall Semester classes begin?",
+    "Thanks! Also, how many annual leave days do staff get?",
+    "What is the daily meal allowance on business trips?",
+    "morning classes schedule",
+    "how are exams graded?",
+    "what's up with the password policy?",
+    "PostgreSQL",
+    "and when?",
+    "q",
+])
+def test_genuine_and_mixed_intent_questions_are_classified_as_document_queries(document_query):
+    assert query_intent.is_conversational(document_query) is False
+    assert query_intent.classify_intent(document_query) == query_intent.QueryIntent.DOCUMENT_QUERY
+
+
+@pytest.mark.asyncio
+async def test_streaming_greeting_is_never_replaced_with_insufficient_fallback(monkeypatch):
+    """Regression: streamed conversational tokens must stay intact on `done` and never be
+    overwritten by INSUFFICIENT_MESSAGE during post-generation verification."""
+    async def fake_stream(_messages):
+        for piece in ["Hi there! ", "How can I assist you today?"]:
+            yield piece
+
+    async def fail_verify(*_args, **_kwargs):
+        raise AssertionError("Claim verification must not run for conversational greetings")
+
+    monkeypatch.setattr(llm, "stream", fake_stream)
+    monkeypatch.setattr(answer_verification, "verify", fail_verify)
+
+    prepared = qa.prepare_conversational("hi")
+    events = [e async for e in qa.stream_answer(prepared)]
+    tokens = "".join(v for k, v in events if k == "token")
+    done_kind, done_answer = events[-1]
+
+    assert done_kind == "done"
+    assert tokens == "Hi there! How can I assist you today?"
+    assert done_answer.answer == "Hi there! How can I assist you today?"
+    assert done_answer.answer != grounded_prompt.INSUFFICIENT_MESSAGE
+    assert done_answer.insufficient is False
+    assert done_answer.uncertain is False
+    assert done_answer.sources == []
+    assert done_answer.claims == []
+
+
+@pytest.mark.parametrize("message,expected_word", [
+    ("hi", "hello"),
+    ("hello", "hello"),
+    ("good morning", "morning"),
+    ("thanks", "welcome"),
+    ("goodbye", "goodbye"),
+])
+async def test_greetings_skip_retrieval_and_avoid_insufficient_fallback(
+    async_client, test_user, qa_env, monkeypatch, message, expected_word
+):
+    await _upload(async_client, test_user, A_PRIVATE, "handbook.txt")
+
+    async def fail_retrieve(*_args, **_kwargs):
+        raise AssertionError("Document retrieval must not be invoked for simple greetings")
+
+    async def fail_embed_query(*_args, **_kwargs):
+        raise AssertionError("Query embedding must not be invoked for simple greetings")
+
+    monkeypatch.setattr(qa, "retrieve", fail_retrieve)
+    monkeypatch.setattr(qa, "embed_query", fail_embed_query)
+
+    r = await _ask(async_client, test_user, message)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert expected_word in body["answer"].lower()
+    assert body["answer"] != grounded_prompt.INSUFFICIENT_MESSAGE
+    assert body["insufficient"] is False
+    assert body["uncertain"] is False
+    assert body["sources"] == []
+    assert body["claims"] == []
+    assert "<context>" not in qa_env[-1][1]["content"]
+
+
+async def test_streaming_greeting_endpoint_preserves_greeting_even_with_uploaded_docs(
+    async_client, test_user, qa_env, monkeypatch
+):
+    await _upload(async_client, test_user, A_PRIVATE, "handbook.txt")
+
+    async def fail_retrieve(*_args, **_kwargs):
+        raise AssertionError("Document retrieval must not run for 'hi'")
+
+    async def fake_stream(_messages):
+        for piece in ["Hello! ", "How can I help you today?"]:
+            yield piece
+
+    monkeypatch.setattr(qa, "retrieve", fail_retrieve)
+    monkeypatch.setattr(llm, "stream", fake_stream)
+
+    r = await _ask(async_client, test_user, "hi", headers={"Accept": "text/event-stream"})
+    assert r.status_code == 200
+    events = [block.split("\n", 1) for block in r.text.strip().split("\n\n")]
+    token_text = "".join(
+        json.loads(data.removeprefix("data: "))["text"]
+        for evt, data in events
+        if evt == "event: token"
+    )
+    done = json.loads(events[-1][1].removeprefix("data: "))
+    assert token_text == "Hello! How can I help you today?"
+    assert done["answer"] == "Hello! How can I help you today?"
+    assert done["insufficient"] is False
+    assert done["sources"] == []
+
+
+async def test_greeting_works_when_user_has_no_documents(async_client, test_user, qa_env):
+    r = await _ask(async_client, test_user, "hey, how are you?")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["insufficient"] is False
+    assert body["answer"] != grounded_prompt.INSUFFICIENT_MESSAGE
+    assert body["sources"] == []
+
+
+@pytest.mark.parametrize("mixed_question", [
+    "Hi, explain the uploaded document",
+    "Good morning, what does the document say about security?",
+])
+async def test_mixed_greeting_and_question_uses_normal_rag_retrieval(
+    async_client, test_user, qa_env, mixed_question
+):
+    await _upload(async_client, test_user, A_PRIVATE, "handbook.txt")
+    r = await _ask(async_client, test_user, mixed_question)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["insufficient"] is False
+    assert body["sources"] and body["sources"][0]["document_name"] == "handbook.txt"
+    assert "<context>" in qa_env[-1][1]["content"]
+    assert "security desk" in qa_env[-1][1]["content"]
+
+
+async def test_out_of_scope_and_mixed_out_of_scope_questions_return_insufficient_fallback(
+    async_client, test_user, test_user_2, qa_env, monkeypatch
+):
+    monkeypatch.setattr(settings, "QA_QUOTE_FALLBACK_MIN", 0.99)
+    await _upload(async_client, test_user, A_PRIVATE, "handbook.txt")
+    await _upload(async_client, test_user_2, B_PRIVATE, "roadmap.txt")
+
+    async def discerning_complete(messages, retries=2):
+        qa_env.append(messages)
+        prompt = messages[1]["content"].lower()
+        if "security desk" in prompt and ("security" in prompt.split("</context>")[-1] or "incident" in prompt.split("</context>")[-1]):
+            first_passage = messages[1]["content"].split("\n")[2]
+            return f"{first_passage.rstrip('.')} [1]."
+        return grounded_prompt.INSUFFICIENT_MARKER
+
+    monkeypatch.setattr(llm, "complete", discerning_complete)
+
+    for question in (
+        "What is the retention period for server backups?",
+        "Hello, what is the retention period?",
+        "Hi, what is the falcon product launch roadmap in March?",
+    ):
+        r = await _ask(async_client, test_user, question)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["insufficient"] is True
+        assert body["answer"] == grounded_prompt.INSUFFICIENT_MESSAGE
+        assert body["sources"] == []
+        assert "falcon" not in json.dumps(body).lower()
+
+
+# ================================================================ Persistent conversation history (FR-037)
+def test_derive_title_collapses_whitespace_and_caps_at_200_chars():
+    assert conversation_store.derive_title("   ") == "New conversation"
+    assert conversation_store.derive_title("  How   long\nmust a password be? ") == "How long must a password be?"
+    long_title = conversation_store.derive_title("word " * 80)
+    assert len(long_title) <= 200 and long_title.endswith("…")
+
+
+async def test_json_chat_creates_persists_appends_lists_and_restores_citations(
+    async_client, test_user, qa_env
+):
+    await _upload(async_client, test_user, A_PRIVATE, "handbook.txt")
+
+    first_resp = await _ask(async_client, test_user, "report suspected data incident security desk")
+    assert first_resp.status_code == 200, first_resp.text
+    first = first_resp.json()
+    conv_id = first["conversation_id"]
+
+    second_conv_resp = await _ask(async_client, test_user, "hi")
+    assert second_conv_resp.status_code == 200
+    second_conv_id = second_conv_resp.json()["conversation_id"]
+    assert second_conv_id != conv_id
+
+    follow_resp = await _ask(
+        async_client,
+        test_user,
+        "How quickly must a data incident be reported?",
+        conversation_id=conv_id,
+    )
+    assert follow_resp.status_code == 200
+    follow = follow_resp.json()
+    assert follow["conversation_id"] == conv_id
+    assert follow["message_id"] != first["message_id"]
+
+    list_resp = await async_client.get("/api/v1/chat/conversations", headers=_auth(test_user))
+    assert list_resp.status_code == 200
+    assert "no-store" in list_resp.headers.get("cache-control", "")
+    items = list_resp.json()
+    assert [c["id"] for c in items[:2]] == [conv_id, second_conv_id]
+    assert items[0]["title"] == "report suspected data incident security desk"
+    assert items[0]["message_count"] == 4
+    assert items[1]["title"] == "hi"
+    assert items[1]["message_count"] == 2
+
+    detail_resp = await async_client.get(f"/api/v1/chat/conversations/{conv_id}", headers=_auth(test_user))
+    assert detail_resp.status_code == 200
+    assert "no-store" in detail_resp.headers.get("cache-control", "")
+    detail = detail_resp.json()
+    assert detail["id"] == conv_id
+    assert detail["message_count"] == 4
+    msgs = detail["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user", "assistant"]
+    assert msgs[0]["content"] == "report suspected data incident security desk"
+    assert msgs[1]["id"] == first["message_id"]
+    assert msgs[1]["content"] == first["answer"]
+    assert msgs[1]["sources"][0]["document_name"] == "handbook.txt"
+    assert "24 hours" in msgs[1]["sources"][0]["text"]
+    assert msgs[2]["content"] == "How quickly must a data incident be reported?"
+    assert msgs[3]["id"] == follow["message_id"]
+    dumped = json.dumps(detail)
+    assert "user_id" not in dumped and "file_path" not in dumped
+
+
+async def test_sse_chat_persists_turn_safely_and_does_not_persist_failed_stream(
+    async_client, test_user, qa_env, monkeypatch
+):
+    await _upload(async_client, test_user, A_PRIVATE, "handbook.txt")
+
+    async def ok_stream(_messages):
+        for piece in ["Within ", "24 hours ", "[1]."]:
+            yield piece
+
+    monkeypatch.setattr(llm, "stream", ok_stream)
+    r = await _ask(
+        async_client,
+        test_user,
+        "report suspected data incident",
+        headers={"Accept": "text/event-stream"},
+    )
+    assert r.status_code == 200
+    events = [block.split("\n", 1) for block in r.text.strip().split("\n\n")]
+    done = json.loads(events[-1][1].removeprefix("data: "))
+    conv_id = done["conversation_id"]
+
+    detail = (await async_client.get(f"/api/v1/chat/conversations/{conv_id}", headers=_auth(test_user))).json()
+    assert detail["message_count"] == 2
+    assert detail["messages"][0]["role"] == "user"
+    assert detail["messages"][1]["id"] == done["message_id"]
+    assert detail["messages"][1]["sources"][0]["document_name"] == "handbook.txt"
+
+    async def broken_stream(_messages):
+        yield "Partial "
+        raise llm.LLMError(llm.UNAVAILABLE)
+
+    monkeypatch.setattr(llm, "stream", broken_stream)
+    err_r = await _ask(
+        async_client,
+        test_user,
+        "Should not create an orphan conversation",
+        headers={"Accept": "text/event-stream"},
+    )
+    assert "event: error" in err_r.text
+    listed = (await async_client.get("/api/v1/chat/conversations", headers=_auth(test_user))).json()
+    assert [c["id"] for c in listed] == [conv_id]
+
+
+async def test_persistence_failure_rolls_back_atomically_without_orphan_rows(
+    async_client, test_user, db_session, qa_env, monkeypatch
+):
+    from sqlalchemy import func, select
+    from backend.app.db.rls import configure_rls_context
+
+    await _upload(async_client, test_user, A_PRIVATE, "handbook.txt")
+
+    orig_save_turn = conversation_store.save_turn
+
+    async def failing_commit_save_turn(db, **kwargs):
+        await configure_rls_context(db, kwargs["user_id"], kwargs.get("user_role", "user"))
+        conv = Conversation(id=kwargs["answer"].conversation_id, user_id=kwargs["user_id"], title="Partial")
+        db.add(conv)
+        await db.flush()
+        db.add(
+            Message(
+                id=kwargs["answer"].message_id,
+                conversation_id=conv.id,
+                user_id=kwargs["user_id"],
+                role="invalid_role_violating_check_constraint",
+                content="boom",
+            )
+        )
+        try:
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            raise conversation_store.ConversationPersistenceError(
+                conversation_store.PERSISTENCE_UNAVAILABLE
+            ) from exc
+
+    monkeypatch.setattr(conversation_store, "save_turn", failing_commit_save_turn)
+
+    r = await _ask(async_client, test_user, "report suspected data incident")
+    assert r.status_code == 503
+    assert r.json()["detail"] == conversation_store.PERSISTENCE_UNAVAILABLE
+
+    monkeypatch.setattr(conversation_store, "save_turn", orig_save_turn)
+    await configure_rls_context(db_session, test_user.id, "user")
+    assert (await db_session.execute(select(func.count()).select_from(Conversation))).scalar_one() == 0
+    assert (await db_session.execute(select(func.count()).select_from(Message))).scalar_one() == 0
+
+
+async def test_unknown_foreign_unauthenticated_and_admin_conversation_access_control(
+    async_client, test_user, test_user_2, admin_user, qa_env
+):
+    import uuid
+
+    random_id = str(uuid.uuid4())
+    assert (await async_client.get("/api/v1/chat/conversations")).status_code == 401
+    assert (await async_client.get(f"/api/v1/chat/conversations/{random_id}")).status_code == 401
+    assert (await async_client.delete(f"/api/v1/chat/conversations/{random_id}")).status_code == 401
+
+    assert (await _ask(async_client, test_user, "hi", conversation_id=random_id)).status_code == 404
+    assert (
+        await _ask(
+            async_client,
+            test_user,
+            "hi",
+            conversation_id=random_id,
+            headers={"Accept": "text/event-stream"},
+        )
+    ).status_code == 404
+    assert (await async_client.get(f"/api/v1/chat/conversations/{random_id}", headers=_auth(test_user))).status_code == 404
+    assert (await async_client.delete(f"/api/v1/chat/conversations/{random_id}", headers=_auth(test_user))).status_code == 404
+
+    created = (await _ask(async_client, test_user, "hello")).json()
+    conv_id = created["conversation_id"]
+
+    for outsider in (test_user_2, admin_user):
+        outsider_list = (await async_client.get("/api/v1/chat/conversations", headers=_auth(outsider))).json()
+        assert all(c["id"] != conv_id for c in outsider_list)
+        assert (await async_client.get(f"/api/v1/chat/conversations/{conv_id}", headers=_auth(outsider))).status_code == 404
+        assert (await _ask(async_client, outsider, "hi", conversation_id=conv_id)).status_code == 404
+        assert (await async_client.delete(f"/api/v1/chat/conversations/{conv_id}", headers=_auth(outsider))).status_code == 404
+
+    del_resp = await async_client.delete(f"/api/v1/chat/conversations/{conv_id}", headers=_auth(test_user))
+    assert del_resp.status_code == 204
+    assert (await async_client.get(f"/api/v1/chat/conversations/{conv_id}", headers=_auth(test_user))).status_code == 404

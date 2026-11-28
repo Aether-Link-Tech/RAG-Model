@@ -604,6 +604,48 @@ async def get_document(
     )
 
 
+@router.post(
+    "/{document_id}/retry",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_document(
+    document_id: uuid.UUID,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> DocumentResponse:
+    """Queue processing again for one of the caller's own failed documents."""
+    document = await _accessible_document(db, current_user.id, document_id)
+    if document.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if document.status != "failed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only failed documents can be retried.",
+        )
+
+    document.status = "processing"
+    document.error_message = None
+    await db.commit()
+    try:
+        process_document.delay(str(document.id), str(current_user.id), current_user.role)
+    except Exception as exc:
+        logger.exception("Could not queue retry for document %s", document.id)
+        await _safe_rollback(db)
+        document = await db.get(Document, document_id)
+        if document is not None:
+            document.status = "failed"
+            document.error_message = "Could not queue the indexing job"
+            await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document retry could not be queued. Please try again.",
+        ) from exc
+
+    await db.refresh(document)
+    return _to_response(document, current_user.id)
+
+
 def _content_disposition(filename: str) -> str:
     """Build an attachment Content-Disposition header matching Starlette FileResponse."""
     clean = filename.replace("\r", "").replace("\n", "")
